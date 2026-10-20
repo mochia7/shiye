@@ -1,5 +1,5 @@
 'use strict';
-/* 詩頁 v0.6 — 詩篇閱讀與排版 */
+/* 詩頁 v0.7 — 詩篇閱讀與排版 */
 
 // ---------- helpers ----------
 const $ = (s, r = document) => r.querySelector(s);
@@ -56,7 +56,7 @@ function sourceGroups() {
   live().forEach(p => { const k = srcKey(p.source); if (k) m.set(k, (m.get(k) || 0) + 1); });
   return [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'zh-Hant'));
 }
-const VERSION = '0.6.0';
+const VERSION = '0.7.0';
 const PRINT = /^#\/print/.test(location.hash);
 const fontKey = (L, st) => L.font || (DB && DB.prefs && DB.prefs.defaultFont) || st.font;
 const live = () => DB.poems.filter(p => !p.deleted);
@@ -147,6 +147,8 @@ async function migrate() {
   DB.poems = DB.poems.filter(p => !p.deleted || p.deleted > cutoff);
   if (DB.poems.length !== before && !PRINT) save();
   DB.poems.forEach(p => { p.layout = Object.assign(defLayout(p.type), p.layout || {}); });
+  const nd = dedupeAuthors(DB);
+  if (nd && !PRINT) { save(); setTimeout(() => toast(`已自動合併 ${nd} 位重複的作者`, 5000), 800); }
 }
 async function load() {
   try {
@@ -186,10 +188,39 @@ const authorById = id => DB.authors.find(a => a.id === id);
 const authorOf = p => p && authorById(p.authorId);
 const authorLabel = a => a ? (a.dynasty ? `${a.dynasty} · ${a.name}` : a.name) : '佚名';
 const byCreated = (a, b) => (a.created || 0) - (b.created || 0) || (a.id < b.id ? -1 : 1);
+// 作者名字比對：忽略前後空白、全形半形、看不見的字元
+const normName = s => String(s || '').normalize('NFKC').replace(/[\u200b-\u200d\u2060\ufeff]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+const cleanName = s => String(s || '').replace(/[\u200b-\u200d\u2060\ufeff]/g, '').replace(/[\s\u3000]+/g, ' ').trim();
+// 同名同朝代的作者合併成一位（同步時兩台裝置用同一套規則：保留 id 最小的那筆）
+function dedupeAuthors(db) {
+  const groups = new Map();
+  (db.authors || []).forEach(a => { const k = normName(a.name); if (!k) return; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(a); });
+  const remap = new Map();
+  for (const list of groups.values()) {
+    if (list.length < 2) continue;
+    const dyns = [...new Set(list.map(a => normName(a.dynasty)).filter(Boolean))];
+    // 只有一種朝代（或都沒填）：全部同一位；有好幾種朝代：同朝代的才合併
+    const sets = dyns.length <= 1 ? [list] : dyns.map(d => list.filter(a => normName(a.dynasty) === d));
+    for (const set of sets) {
+      if (set.length < 2) continue;
+      const keep = set.reduce((m, a) => (a.id < m.id ? a : m));
+      set.forEach(a => {
+        if (a === keep) return;
+        if (!keep.dynasty && a.dynasty) keep.dynasty = a.dynasty;
+        if ((a.bio || '').trim() && !(keep.bio || '').includes(a.bio.trim())) keep.bio = [keep.bio, a.bio].filter(x => (x || '').trim()).join('\n');
+        remap.set(a.id, keep.id);
+      });
+    }
+  }
+  if (!remap.size) return 0;
+  (db.poems || []).forEach(p => { if (remap.has(p.authorId)) p.authorId = remap.get(p.authorId); });
+  db.authors = db.authors.filter(a => !remap.has(a.id));
+  return remap.size;
+}
 function resolveAuthor(name, dynasty) {
-  name = String(name || '').trim(); dynasty = String(dynasty || '').trim();
+  name = cleanName(name); dynasty = String(dynasty || '').trim();
   if (!name || name === '佚名') return null;
-  const same = DB.authors.filter(a => a.name === name);
+  const same = DB.authors.filter(a => normName(a.name) === normName(name));
   let a = same.find(x => x.dynasty === dynasty) || (same.length === 1 && (!dynasty || !same[0].dynasty) ? same[0] : null);
   if (a) { if (!a.dynasty && dynasty) a.dynasty = dynasty; return a.id; }
   a = { id: uid(), name, dynasty, bio: '' }; DB.authors.push(a); return a.id;
@@ -399,6 +430,8 @@ function parseImported(text, filename, ext) {
   const r = ShiImport.parsePoemFile(text, filename);
   const base = String(filename || '').split(/[\\/]/).pop().replace(/\.[^.]+$/, '');
   if (r.flags.includes('title-guessed') === false && CAMERA_NAME.test(r.title) && r.title === base) r.title = '無題';
+  // 內文開頭的「作者：某某」
+  if (!r.authorName) { const m = r.text.match(/^[ \t　]*(?:作者|文)[ \t　]*[:：][ \t　]*([^\n]{1,20}?)[ \t　]*(?:\n|$)/); if (m) { r.authorName = m[1].trim(); r.text = r.text.slice(m[0].length).replace(/^\s*\n/, ''); } }
   return { title: r.title, authorName: r.authorName, dynasty: r.dynasty, authorNick: r.authorNick, text: r.text, type: r.type, source: r.source, date: r.date, tags: r.tags, note: r.note, flags: r.flags };
 }
 // 從別的 App 分享過來的文字：短的第一行當標題，「作者：」行當作者
@@ -713,7 +746,7 @@ function homeView() {
         <p>拖曳檔案、圖片或整個資料夾到這裡。<br>文字檔：.txt、.md、.docx（PTT 文章、報紙副刊格式都認得）。<br>圖片：照片或截圖會自動辨識成文字。<br>匯入資料夾時，重複的詩會自動挑出來。</p>
         <div class="row">
           <label class="btn red sq" for="f-home">選擇檔案或圖片</label>
-          <input id="f-home" class="sr" type="file" accept=".txt,.md,.markdown,.docx,text/plain,image/*" multiple data-file="home">
+          <input id="f-home" class="sr" type="file" accept=".txt,.md,.markdown,.docx,.zip,application/zip,text/plain,image/*" multiple data-file="home">
           <label class="btn sq d-only" for="f-folder">匯入整個資料夾</label>
           <input id="f-folder" class="sr" type="file" webkitdirectory directory multiple data-file="folder">
           <a class="btn sq" href="#/new">空白書寫</a>
@@ -863,6 +896,12 @@ function editorView(e) {
         <label class="btn sq" for="f-ed">瀏覽檔案</label>
         <input id="f-ed" class="sr" type="file" accept=".txt,.md,.markdown,.docx,text/plain,image/*" data-file="editor">
       </div>
+      ${e.id ? '' : `<div class="card panel">
+        <p class="label">批次匯入</p>
+        <p class="note" style="margin:0">一次選很多個檔案，或一個 zip 壓縮檔（例如整個資料夾壓縮起來）。會先列出清單、挑掉重複的，再匯入。</p>
+        <label class="btn sq" for="f-batch" style="align-self:flex-start">選擇多個檔案或 zip</label>
+        <input id="f-batch" class="sr" type="file" multiple accept=".txt,.md,.markdown,.docx,.zip,application/zip,text/plain,image/*" data-file="batch">
+      </div>`}
       ${serverMode ? `<div class="card panel">
         <p class="label">從網址抓取</p>
         <div class="row" style="flex-wrap:nowrap"><input id="ed-url" class="search" style="flex:1;min-width:0;height:40px" placeholder="貼上收錄這首詩的網址" autocomplete="off" spellcheck="false"><button type="button" class="btn sq" data-act="x-fetch" style="height:40px">抓取</button></div>
@@ -887,7 +926,14 @@ function editorView(e) {
           <label class="field dyn">日期<input data-in="ed-date" type="date" value="${esc(e.date)}"></label>
         </div>
         <label class="field">附記（後記、註解、作者簡介）<textarea data-in="ed-note" rows="3" class="ta">${esc(e.note)}</textarea></label>
+        <p class="label" style="margin-top:6px">插圖</p>
         ${e.illustration ? `<div class="illus-mini"><img data-img="${esc(e.illustration)}" alt="插圖"><button type="button" class="btn ghost sq danger" data-act="ed-rmillus" style="height:36px">移除插圖</button></div>` : ''}
+        <div class="row" style="gap:8px">
+          <label class="btn ghost sq" for="f-illus" style="height:36px">${e.illustration ? '換一張' : '加上插圖'}</label>
+          <input id="f-illus" class="sr" type="file" accept="image/*" data-file="illus">
+          <button type="button" class="btn ghost sq" data-act="ed-paste-illus" style="height:36px">從剪貼簿貼上插圖</button>
+        </div>
+        <p class="note d-only" style="margin:0">也可以複製圖片後按 Ctrl＋V（游標不要在文字框裡）。</p>
       </div>
       ${authorsDl}${dynDatalist()}
     </aside>
@@ -1196,10 +1242,11 @@ function colView(c) {
       <div class="drop" data-drop="cover" style="padding:22px">
         ${IC.img}
         <div style="font-weight:600;font-size:15px">上傳封面圖片</div>
-        <p style="font-size:13px">JPG · PNG · WebP，最大 15MB<br>建議直式 2:3，例如 1600 × 2400</p>
+        <p style="font-size:13px">JPG · PNG · WebP，最大 15MB<br>建議直式 2:3，例如 1600 × 2400<span class="d-only"><br>也可以複製圖片後在這一頁按 Ctrl＋V</span></p>
         <div class="row">
           <label class="btn sq" for="f-cover">選擇圖片</label>
           <input id="f-cover" class="sr" type="file" accept="image/jpeg,image/png,image/webp,image/gif" data-file="cover">
+          <button type="button" class="btn ghost sq" data-act="cv-paste">從剪貼簿貼上</button>
           ${cv.img ? '<button type="button" class="btn ghost sq" data-act="cv-rmimg">移除圖片</button>' : ''}
         </div>
       </div>
@@ -1230,7 +1277,7 @@ function colView(c) {
           <div class="row">
             ${poems.length ? `<a class="btn sq" href="#/flow/${poems[0].id}" data-act="scope-collection">${IC.scroll}連續閱讀</a><button type="button" class="btn sq" data-act="export-col">導出整本 PDF</button>${selBtnHTML()}` : ''}
             <label class="btn sq" for="f-colpoem">匯入檔案到這本</label>
-            <input id="f-colpoem" class="sr" type="file" accept=".txt,.md,.markdown,.docx,text/plain,image/*" multiple data-file="colpoem">
+            <input id="f-colpoem" class="sr" type="file" accept=".txt,.md,.markdown,.docx,.zip,application/zip,text/plain,image/*" multiple data-file="colpoem">
             <a class="btn dark sq" href="#/new?col=${c.id}">新增詩篇</a>
           </div>
         </div>
@@ -1259,6 +1306,34 @@ function bindCoverDrag(c) {
   const end = () => { if (on) { on = false; save(); } };
   el.addEventListener('pointerup', end); el.addEventListener('pointercancel', end);
 }
+async function setIllus(file) {
+  if (!ED || !file) return;
+  if (!/^image\//.test(file.type) && !isImage(file)) { toast('請選擇圖片'); return; }
+  if (file.size > 15 * 1024 * 1024) { toast('圖片超過 15MB'); return; }
+  try {
+    const blob = file.size > 2.5 * 1024 * 1024 || !/^image\/(jpeg|png|webp|gif)$/.test(file.type) ? await shrinkImage(file, 2400, 'image/jpeg') : file;
+    const url = await uploadImageBlob(blob, file.name || 'illus.jpg');
+    const keep = ED; keep.illustration = url; $('#app').innerHTML = editorView(keep); ED = keep; edRefresh(); bindDrops();
+    toast('已加上插圖，儲存後會顯示在詩的上方');
+  } catch (e) { toast('插圖儲存失敗'); }
+}
+// 讀剪貼簿裡的圖片（iPhone 第一次會跳出「貼上」確認）
+async function clipImage() {
+  if (!navigator.clipboard || !navigator.clipboard.read) { toast('這個瀏覽器不能讀取剪貼簿的圖片，請改用「選擇圖片」'); return null; }
+  try {
+    const items = await navigator.clipboard.read();
+    for (const it of items) { const t = it.types.find(x => /^image\//.test(x)); if (t) { const b = await it.getType(t); return new File([b], 'paste.' + (t.split('/')[1] || 'png'), { type: t }); } }
+    toast('剪貼簿裡沒有圖片。請長按圖片選「拷貝」，不是拷貝網址', 5000); return null;
+  } catch (e) { toast('沒辦法讀取剪貼簿，請再按一次，出現「貼上」時點它', 5000); return null; }
+}
+const pastedImage = e => { const it = [...((e.clipboardData && e.clipboardData.items) || [])].find(x => x.kind === 'file' && /^image\//.test(x.type)); const f = it && it.getAsFile(); return f ? new File([f], 'paste.' + (f.type.split('/')[1] || 'png'), { type: f.type }) : null; };
+document.addEventListener('paste', e => {
+  const t = e.target, r = route();
+  if (t && (t.tagName === 'TEXTAREA' || t.tagName === 'INPUT' || t.isContentEditable)) return;
+  const f = pastedImage(e); if (!f) return;
+  if (r.view === 'col' && colById(r.id)) { e.preventDefault(); uploadCover(colById(r.id), f); }
+  else if ((r.view === 'edit' || r.view === 'new') && ED) { e.preventDefault(); setIllus(f); }
+});
 async function uploadCover(c, file) {
   if (!/^image\/(jpeg|png|webp|gif)$/.test(file.type)) { toast('請選擇 JPG、PNG 或 WebP 圖片'); return; }
   if (file.size > 15 * 1024 * 1024) { toast('圖片超過 15MB'); return; }
@@ -1402,8 +1477,62 @@ async function entriesFromRoots(roots) {
   for (const r of roots) await walk(r);
   return out;
 }
-async function startFolderImport(list) {
-  list = list.filter(x => !SKIP_NAME.test(x.rel.split('/').pop()));
+// ---------- zip 壓縮檔（iPhone 不能選資料夾，可以把資料夾壓縮成 zip） ----------
+const MIME = { txt: 'text/plain', md: 'text/markdown', markdown: 'text/markdown', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif', heic: 'image/heic' };
+async function unzipEntries(zipFile) {
+  const u8 = new Uint8Array(await zipFile.arrayBuffer()), dv = new DataView(u8.buffer);
+  let e = -1;
+  for (let i = u8.length - 22; i >= Math.max(0, u8.length - 66000); i--) if (dv.getUint32(i, true) === 0x06054b50) { e = i; break; }
+  if (e < 0) throw new Error(`「${zipFile.name}」不是有效的 zip 壓縮檔`);
+  const n = dv.getUint16(e + 10, true); let off = dv.getUint32(e + 16, true);
+  const utf8 = new TextDecoder('utf-8', { fatal: true }), big5 = new TextDecoder('big5');
+  const out = [];
+  for (let k = 0; k < n; k++) {
+    if (dv.getUint32(off, true) !== 0x02014b50) break;
+    const flags = dv.getUint16(off + 8, true), method = dv.getUint16(off + 10, true);
+    const csize = dv.getUint32(off + 20, true), nl = dv.getUint16(off + 28, true), xl = dv.getUint16(off + 30, true), cl = dv.getUint16(off + 32, true);
+    const lho = dv.getUint32(off + 42, true);
+    const nb = u8.subarray(off + 46, off + 46 + nl);
+    let name; try { name = (flags & 0x800) ? new TextDecoder().decode(nb) : utf8.decode(nb); } catch (er) { name = big5.decode(nb); }
+    off += 46 + nl + xl + cl;
+    name = name.replace(/\\/g, '/');
+    if (name.endsWith('/') || /(^|\/)__MACOSX\//.test(name) || SKIP_NAME.test(name.split('/').pop())) continue;
+    const ds = lho + 30 + dv.getUint16(lho + 26, true) + dv.getUint16(lho + 28, true);
+    const raw = u8.subarray(ds, ds + csize);
+    let data;
+    if (method === 0) data = raw;
+    else if (method === 8) {
+      if (typeof DecompressionStream === 'undefined') throw new Error('這個瀏覽器不能解開 zip，請更新 iOS 或改選多個檔案');
+      data = new Uint8Array(await new Response(new Blob([raw]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).arrayBuffer());
+    } else continue;
+    const base = name.split('/').pop(), ext = (base.split('.').pop() || '').toLowerCase();
+    out.push({ file: new File([data], base, { type: MIME[ext] || '' }), path: name });
+  }
+  return out;
+}
+// 一次匯入很多個檔案或 zip：和「匯入整個資料夾」一樣先列出清單
+async function batchImport(files, colId) {
+  const list = [];
+  const zips = files.filter(f => /\.zip$/i.test(f.name) || f.type === 'application/zip');
+  const others = files.filter(f => !zips.includes(f));
+  let root = others.length ? '選取的檔案' : zips[0].name.replace(/\.zip$/i, '');
+  try {
+    for (const z of zips) {
+      toast(`正在解開「${z.name}」…`, 60000);
+      const ents = await unzipEntries(z);
+      const tops = new Set(ents.map(x => x.path.split('/')[0]));
+      const zbase = z.name.replace(/\.zip$/i, '');
+      // zip 裡只有一個最外層資料夾：用它當名字；不然用 zip 的檔名
+      ents.forEach(x => list.push({ file: x.file, rel: tops.size === 1 && x.path.includes('/') ? x.path : zbase + '/' + x.path }));
+      if (zips.length === 1 && !others.length && tops.size === 1 && ents[0] && ents[0].path.includes('/')) root = [...tops][0];
+    }
+  } catch (e) { toast(e.message || '解壓縮失敗', 6000); return; }
+  others.forEach(f => list.push({ file: f, rel: root + '/' + f.name }));
+  const col = colId && colById(colId);
+  await startFolderImport(list, { batch: true, zip: zips.length > 0 && !others.length, col: col ? col.name : '' });
+}
+async function startFolderImport(list, opt = {}) {
+  list = list.filter(x => !SKIP_NAME.test(x.rel.split('/').pop()) && !/(^|\/)__MACOSX\//.test(x.rel));
   if (!list.length) { toast('資料夾裡沒有檔案'); return; }
   toast(`正在讀取 ${list.length} 個檔案…`, 60000);
   const rows = [];
@@ -1423,7 +1552,7 @@ async function startFolderImport(list) {
     const k = bk(im.name);
     const t = k && rows.find(r => r.kind === 'text' && r.folder === im.folder && (bk(r.name) === k || ShiImport.normKey(r.d.title) === k || (k.length >= 3 && bk(r.name).endsWith(k))));
     if (t) { im.status = 'illus'; im.pair = t.id; im.checked = true; im.msg = `當作〈${t.d.title}〉的插圖`; }
-    else { im.status = 'ocr'; im.checked = serverMode; im.msg = serverMode ? '會用文字辨識轉成文字（匯入後標上「待校對」）' : '需要 Windows 版才能辨識圖片'; }
+    else { im.status = 'ocr'; im.checked = true; im.msg = serverMode ? '會用文字辨識轉成文字（匯入後標上「待校對」）' : '會在手機上辨識成文字（匯入後標上「待校對」）；辨識不了的留給電腦版'; }
   }
   // 重複比對：和詩頁裡已有的詩、和資料夾裡前面的檔案
   const existing = live().map(p => ({ p, k: ShiImport.normKey(p.text) }));
@@ -1451,7 +1580,7 @@ async function startFolderImport(list) {
   }
   const order = { new: 0, maybe: 1, ocr: 2, illus: 3, dup: 4, error: 5 };
   rows.sort((a, b) => order[a.status] - order[b.status] || textRows.indexOf(a) - textRows.indexOf(b));
-  IMP = { rows, root: list[0].rel.split('/')[0], useFolders: true, rootCol: '', order: textRows.map(r => r.id) };
+  IMP = { rows, root: list[0].rel.split('/')[0], useFolders: true, rootCol: opt.col || '', order: textRows.map(r => r.id), batch: !!opt.batch, zip: !!opt.zip };
   $('#toast').classList.remove('show');
   go('#/import');
 }
@@ -1469,7 +1598,7 @@ function importView() {
   const rowHTML = r => {
     const [bl, bc] = IMP_BADGE[r.status] || ['', ''];
     const d = r.d;
-    const dis = r.status === 'error' || (r.status === 'ocr' && !serverMode);
+    const dis = r.status === 'error';
     const target = r.kind === 'text' || r.status === 'ocr' ? impTarget(r) : '';
     const preview = d ? (d.text.split('\n').slice(0, 14).join('\n') + (d.text.split('\n').length > 14 ? '\n……' : '')) : '';
     return `<details class="irow${r.checked ? ' on' : ''}">
@@ -1495,7 +1624,7 @@ function importView() {
   return topbar(`<a class="btn" href="#/" data-act="imp-cancel">取消</a>`) + `
   <main class="page" style="gap:24px">
     <div>
-      <h1 class="sec" style="font-size:32px">匯入資料夾「${esc(IMP.root)}」</h1>
+      <h1 class="sec" style="font-size:32px">${IMP.zip ? '匯入壓縮檔' : IMP.batch ? '批次匯入' : '匯入資料夾'}「${esc(IMP.root)}」</h1>
       <p class="muted" style="margin:8px 0 0">${rows.length} 個檔案 · 點每一列可以展開預覽 · 重複的已經幫你取消勾選</p>
     </div>
     <div class="istats">
@@ -1534,6 +1663,7 @@ async function runImport() {
   const rows = IMP.rows.filter(r => r.checked);
   if (!rows.length) return;
   if (serverMode) { try { await fetch('api/backup?tag=import', { method: 'POST' }); } catch (e) {} }
+  else { try { localStorage.setItem('shiye-data-before-import', JSON.stringify(DB)); } catch (e) {} }
   const byId = Object.fromEntries(IMP.rows.map(r => [r.id, r]));
   const textRows = IMP.order.map(id => byId[id]).filter(r => r.checked);
   let t = Date.now() - (rows.length + 5) * 1000;
@@ -2058,8 +2188,8 @@ document.addEventListener('click', e => {
     case 'trash-restore-all': { const ps = trashed(); ps.forEach(x => { delete x.deleted; touch(x); }); save(); render(); toast(`已還原 ${ps.length} 首`); break; }
     case 'trash-empty': { const n = trashed().length; if (confirm(`永久刪除回收桶裡的 ${n} 首詩？刪除後就不能復原了。`)) { DB.poems = DB.poems.filter(y => !y.deleted); save(); render(); toast('回收桶已清空'); } break; }
     case 'imp-cancel': IMP = null; break;
-    case 'imp-only-new': IMP.rows.forEach(x => { x.checked = x.status === 'new' || (x.status === 'illus') || (x.status === 'ocr' && serverMode); }); render(); break;
-    case 'imp-all': IMP.rows.forEach(x => { x.checked = x.status !== 'error' && !(x.status === 'ocr' && !serverMode); }); render(); break;
+    case 'imp-only-new': IMP.rows.forEach(x => { x.checked = x.status === 'new' || x.status === 'illus' || x.status === 'ocr'; }); render(); break;
+    case 'imp-all': IMP.rows.forEach(x => { x.checked = x.status !== 'error'; }); render(); break;
     case 'imp-none': IMP.rows.forEach(x => { x.checked = false; }); render(); break;
     case 'imp-go': b.disabled = true; b.textContent = '匯入中…'; runImport(); break;
     case 'export-open': if (p) openExport({ poemId: p.id }); break;
@@ -2121,6 +2251,8 @@ document.addEventListener('click', e => {
     case 'rc-prev': if (p) { if (RS <= 0) { const n = neighbors(p).prev; if (n) { go('#/read/' + n.id); break; } } RS--; readerUpdate(p, false); } break;
     case 'rc-next': if (p) { const n = Math.max(stanzas(p.text).length, 1); if (RS >= n - 1) { goNeighbor(p, 'next'); break; } RS++; readerUpdate(p, false); } break;
     case 'cv': if (c) { c.cover[b.dataset.k] = b.dataset.v; save(); render(); } break;
+    case 'cv-paste': if (c) clipImage().then(f => f && uploadCover(c, f)); break;
+    case 'ed-paste-illus': clipImage().then(f => f && setIllus(f)); break;
     case 'cv-rmimg': if (c) { c.cover.img = null; save(); render(); } break;
     case 'del-col': if (c && confirm(`刪除《${c.name}》？裡面的詩不會被刪除，會移到「未分類」。`)) {
       DB.poems.forEach(x => { if (x.collectionId === c.id) x.collectionId = null; });
@@ -2194,6 +2326,9 @@ document.addEventListener('change', e => {
 async function handleFiles(kind, files) {
   const r = route();
   if (kind === 'folder') { startFolderImport(files.map(f => ({ file: f, rel: f.webkitRelativePath || f.name }))); return; }
+  const isZip = f => /\.zip$/i.test(f.name) || f.type === 'application/zip';
+  if (kind === 'batch' || ((kind === 'home' || kind === 'colpoem') && (files.length > 1 || files.some(isZip)))) { batchImport(files, kind === 'colpoem' ? r.id : (kind === 'batch' && ED && ED.collectionId) || null); return; }
+  if (kind === 'illus') { setIllus(files[0]); return; }
   if (kind === 'home') importFiles(files);
   else if (kind === 'colpoem') importFiles(files, r.id);
   else if (kind === 'cover') { const c = colById(r.id); if (c) uploadCover(c, files[0]); }

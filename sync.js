@@ -206,7 +206,11 @@
           let remote = got.unchanged ? STATE.base : got.data;
           const sha = got.unchanged ? STATE.sha : got.sha;
           if (!remote) remote = { version: DB.version, poems: [], authors: [], collections: [] };
-          const { merged, stats } = merge(STATE.base, localP, remote);
+          const mr = merge(STATE.base, localP, remote), stats = mr.stats;
+          const merged = JSON.parse(JSON.stringify(mr.merged));
+          // 兩台裝置各自新增了同一位作者：合併成一位
+          const nd = typeof dedupeAuthors === 'function' ? dedupeAuthors(merged) : 0;
+          if (nd) stats.authorsMerged = nd;
           const mergedStr = stable(merged);
           let newSha = sha;
           if (mergedStr !== stable(remote)) {
@@ -217,6 +221,7 @@
           if (mergedStr !== localStr) applyMerged(merged);
           STATE.base = JSON.parse(mergedJSON(merged)); STATE.sha = newSha; STATE.last = Date.now(); STATE.lastError = '';
           await kvSet('sync-state', STATE);
+          if (stats.authorsMerged) setTimeout(() => toast(`已自動合併 ${stats.authorsMerged} 位重複的作者`, 5000), 300);
           if (stats.pulled || stats.conflicts) document.dispatchEvent(new CustomEvent('shiye-synced', { detail: stats }));
           break;
         }
