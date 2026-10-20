@@ -1,5 +1,5 @@
 'use strict';
-/* 詩頁 v0.5 — 詩篇閱讀與排版 */
+/* 詩頁 v0.6 — 詩篇閱讀與排版 */
 
 // ---------- helpers ----------
 const $ = (s, r = document) => r.querySelector(s);
@@ -29,7 +29,7 @@ const IC = {
 const TYPES = { classic: '古典', modern: '新詩', shape: '圖像詩' };
 const STYLES = {
   classic:    { name: '經典書頁', bg: '#FBFAF7', fg: '#1C1B19', font: 'serif', ls: .12, align: 'center' },
-  vertical:   { name: '直排古籍', bg: '#EDE6D6', fg: '#2A241C', font: 'serif', ls: .3,  align: 'center' },
+  vertical:   { name: '古籍書頁', bg: '#EDE6D6', fg: '#2A241C', font: 'serif', ls: .3,  align: 'center' },
   night:      { name: '極簡夜讀', bg: '#16181D', fg: '#E8E4DA', font: 'serif', ls: .06, align: 'left' },
   manuscript: { name: '手稿稿紙', bg: '#F3EBDC', fg: '#3A2E22', font: 'kai',   ls: .12, align: 'center' },
   magazine:   { name: '詩刊雜誌', bg: '#FFFFFF', fg: '#1C1B19', font: 'serif', ls: .06, align: 'left' },
@@ -56,7 +56,7 @@ function sourceGroups() {
   live().forEach(p => { const k = srcKey(p.source); if (k) m.set(k, (m.get(k) || 0) + 1); });
   return [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'zh-Hant'));
 }
-const VERSION = '0.5.0';
+const VERSION = '0.6.0';
 const PRINT = /^#\/print/.test(location.hash);
 const fontKey = (L, st) => L.font || (DB && DB.prefs && DB.prefs.defaultFont) || st.font;
 const live = () => DB.poems.filter(p => !p.deleted);
@@ -215,17 +215,50 @@ function stanzas(text) {
   return out;
 }
 function linesHTML(sts, L, lhpx, opts = {}) {
-  const hang = L.hang ? 2 : 0;
+  const hang = L.hang ? (opts.v ? 1 : 2) : 0;
   let g = GAP[L.gap][1]; if (opts.ruled) g = Math.max(1, Math.round(g));
-  let h = '';
+  let h = '', li = opts.li0 || 0;
   sts.forEach(s => s.lines.forEach((ln, i) => {
     const ind = L.keep ? ln.ind : 0;
     const mt = i === 0 && s.gapMul ? `margin-block-start:${(lhpx * g * Math.min(s.gapMul, 3)).toFixed(1)}px;` : '';
-    h += `<div class="ln" style="padding-inline-start:${ind + hang}em;text-indent:-${hang}em;${mt}white-space:${L.keep ? 'pre-wrap' : 'normal'}">${esc(ln.text) || '&nbsp;'}</div>`;
+    h += `<div class="ln" data-li="${li}" style="padding-inline-start:${ind + hang}em;text-indent:-${hang}em;${mt}white-space:${L.keep ? 'pre-wrap' : 'normal'}">${lineInner(ln.text, li, opts) || '&nbsp;'}</div>`;
+    li++;
   }));
   return h || '<div class="ln" style="opacity:.5">（尚無內容）</div>';
 }
-function layoutOf(p) { return Object.assign(defLayout(p.type), p.layout || {}); }
+function layoutOf(p) {
+  const L = Object.assign(defLayout(p.type), p.layout || {});
+  // 閱讀方向和風格分開：舊資料用「直排古籍」的詩預設直排
+  if (L.dir !== 'v' && L.dir !== 'h') L.dir = L.style === 'vertical' ? 'v' : 'h';
+  if (p.type === 'shape' || L.style === 'shape') L.dir = 'h';
+  if (L.seal == null) L.seal = L.style === 'vertical';
+  if (L.bi !== 'off') L.bi = 'on';
+  return L;
+}
+const isVert = (p, L) => L.dir === 'v' && !(p.trans && p.trans.trim() && L.bi === 'on');
+// 直排時：一兩位數的數字橫著擠成一格，三位數以上每個字直立
+const vDigits = h => h.replace(/\d+/g, m => m.length <= 2 ? `<span class="tcy">${m}</span>` : `<span class="upr">${m}</span>`);
+// 一行的內容：加上劃線
+function lineInner(text, li, opts) {
+  const v = !!opts.v, marks = (opts.marks || []);
+  const fmt = t => v ? vDigits(esc(t)) : esc(t);
+  const segs = [];
+  marks.forEach(m => (m.segs || []).forEach(g => {
+    if (g.li !== li) return;
+    let a = g.s, b = g.e;
+    if (text.slice(a, b) !== g.t) { const k = text.indexOf(g.t); if (k < 0 || !g.t) return; a = k; b = k + g.t.length; }
+    segs.push({ a, b, id: m.id, note: !!(m.note && m.note.trim()) });
+  }));
+  if (!segs.length) return fmt(text);
+  segs.sort((x, y) => x.a - y.a);
+  let out = '', pos = 0;
+  segs.forEach(g => {
+    if (g.a < pos) return;
+    out += fmt(text.slice(pos, g.a)) + `<mark class="hl${g.note ? ' has-note' : ''}" data-mid="${g.id}">${fmt(text.slice(g.a, g.b))}</mark>`;
+    pos = g.b;
+  });
+  return out + fmt(text.slice(pos));
+}
 
 // ---------- poem article ----------
 let RS = 0; // recite stanza index
@@ -242,23 +275,28 @@ function articleHTML(p, L, opts = {}) {
   const titleCss = `font-size:${size + 12}px;letter-spacing:${Math.max(st.ls, .06)}em;font-family:${font}`;
   const author = au ? `<div class="pa">${esc(authorLabel(au))}</div>` : '';
   const idAttr = opts.anchor ? ` id="f-${p.id}" data-pid="${p.id}"` : '';
+  const vd = isVert(p, L) && L.style !== 'shape';
+  const lo = { v: vd, marks: opts.noMarks ? [] : (p.marks || []) };
+  const bi = p.trans && p.trans.trim() && L.bi === 'on' && L.style !== 'shape' && L.style !== 'recite';
 
-  if (L.style === 'magazine') {
+  if (L.style === 'magazine' && !vd) {
     return `<article class="art magazine"${idAttr} style="${base}">
       <div class="mag-head"><span>詩頁${col ? '　·　' + esc(col.name) : ''}</span><span>${TYPES[p.type]}</span></div>
       <h1 class="mag-title">${esc(p.title || '無題')}</h1>
       ${au ? `<div style="margin-top:12px;font-size:15px;color:#55524B">${au.dynasty ? esc(au.dynasty) + '　' : '文　'}${esc(au.name)}</div>` : ''}
       <div class="mag-rule"></div>
-      <div style="${bodyCss}font-family:${font};max-width:34em;text-align:${align}">${linesHTML(sts, L, lhpx)}</div>
+      <div style="${bodyCss}font-family:${font};${bi ? '' : 'max-width:34em;'}text-align:${align}">${bi ? biHTML(p, sts, L, lhpx, lo) : linesHTML(sts, L, lhpx, lo)}</div>
+      ${L.seal ? `<div class="seal">${SEAL}</div>` : ''}
     </article>`;
   }
   if (L.style === 'recite') {
     const n = Math.max(sts.length, 1); RS = clamp(RS, 0, n - 1);
     const one = sts.length ? [{ lines: sts[RS].lines, gapMul: 0 }] : [];
+    const li0 = sts.slice(0, RS).reduce((a, x) => a + x.lines.length, 0);
     const big = Math.round(size * 1.7), bl = big * lh;
     return `<article class="art recite"${idAttr} style="${base}">
       <div style="font-size:13px;letter-spacing:.25em;color:#9A968C">${esc(p.title || '無題')}${au ? '　·　' + esc(au.name) : ''}　·　第 ${RS + 1} / ${n} 節</div>
-      <div style="font-family:${font};font-size:${big}px;line-height:${bl}px;letter-spacing:${st.ls}em;text-align:${align};margin:40px 0">${linesHTML(one, L, bl)}</div>
+      <div class="${vd ? 'rc-v' : ''}" style="font-family:${font};font-size:${big}px;line-height:${bl}px;letter-spacing:${st.ls}em;text-align:${align};margin:40px 0">${linesHTML(one, L, bl, Object.assign({}, lo, { li0 }))}</div>
       <div class="rc-nav no-print">
         <button type="button" data-act="rc-prev" aria-label="上一節">${IC.back}</button>
         <div class="rc-bar"><div style="width:${Math.round((RS + 1) / n * 100)}%"></div></div>
@@ -275,15 +313,44 @@ function articleHTML(p, L, opts = {}) {
     </article>`;
   }
   const ruled = L.style === 'manuscript';
-  const ruleCss = ruled ? `background-image:linear-gradient(to bottom,transparent ${lhpx - 1}px,#D9C9AE ${lhpx - 1}px);background-size:100% ${lhpx}px;` : '';
+  const ruleCss = !ruled ? '' : vd ? `background-image:linear-gradient(to left,transparent ${lhpx - 1}px,#D9C9AE ${lhpx - 1}px);background-size:${lhpx}px 100%;background-position:right top;` : `background-image:linear-gradient(to bottom,transparent ${lhpx - 1}px,#D9C9AE ${lhpx - 1}px);background-size:100% ${lhpx}px;`;
   const items = align === 'center' ? 'align-items:center;' : 'align-items:flex-start;align-self:stretch;';
-  return `<article class="art ${L.style}"${idAttr} style="${base}">
-    <div class="pb" style="${items}text-align:${align};font-family:${font}">
-      <div class="ph"><h1 style="${titleCss}">${esc(p.title || '無題')}</h1>${author}</div>
-      <div style="${bodyCss}${ruleCss}">${linesHTML(sts, L, lhpx, { ruled })}</div>
+  const tCss = L.style === 'magazine' ? 'font-family:var(--sans);font-weight:900;' : '';
+  if (vd) return `<article class="art ${L.style} vdir"${idAttr} style="${base}">
+    <div class="pb" style="text-align:${align};font-family:${font}">
+      <div class="ph"><h1 style="${titleCss};${tCss}">${esc(p.title || '無題')}</h1>${author}</div>
+      <div class="vbody" style="${bodyCss}${ruleCss}">${linesHTML(sts, L, lhpx, Object.assign({ ruled }, lo))}</div>
+      ${L.seal ? `<div class="seal-v">${SEAL}</div>` : ''}
     </div>
-    ${L.style === 'vertical' ? `<div class="seal">${SEAL}</div>` : ''}
   </article>`;
+  return `<article class="art ${L.style}${bi ? ' bi-on' : ''}"${idAttr} style="${base}">
+    <div class="pb" style="${bi ? 'align-items:stretch;align-self:stretch;width:100%;' : items}text-align:${align};font-family:${font}">
+      <div class="ph"><h1 style="${titleCss}">${esc(p.title || '無題')}</h1>${author}</div>
+      <div style="${bodyCss}${ruleCss}">${bi ? biHTML(p, sts, L, lhpx, lo) : linesHTML(sts, L, lhpx, Object.assign({ ruled }, lo))}</div>
+    </div>
+    ${L.seal ? `<div class="seal">${SEAL}</div>` : ''}
+  </article>`;
+}
+
+// 對照譯文：原文和譯文一行對一行
+function biHTML(p, sts, L, lhpx, lo) {
+  const tr = stanzas(p.trans);
+  const flat = ss => ss.flatMap((s, si) => s.lines.map((ln, i) => ({ ln, gap: i === 0 && si > 0 ? Math.min(s.gapMul || 1, 3) : 0 })));
+  const A = flat(sts), B = flat(tr);
+  // 節數一樣時一節對一節；不一樣就一行對一行
+  const rows = [];
+  if (sts.length === tr.length) {
+    sts.forEach((s, si) => { const n = Math.max(s.lines.length, tr[si].lines.length); for (let i = 0; i < n; i++) rows.push({ a: s.lines[i], b: tr[si].lines[i], gap: i === 0 && si > 0 ? Math.min(s.gapMul || 1, 3) : 0 }); });
+  } else { const n = Math.max(A.length, B.length); for (let i = 0; i < n; i++) rows.push({ a: A[i] && A[i].ln, b: B[i] && B[i].ln, gap: (A[i] || B[i]).gap }); }
+  const g = GAP[L.gap][1], hang = L.hang ? 2 : 0, ws = L.keep ? 'pre-wrap' : 'normal';
+  let li = 0;
+  const cell = (ln, cls, isA) => {
+    if (!ln) return `<div class="ln ${cls}">&nbsp;</div>`;
+    const ind = L.keep ? ln.ind : 0;
+    const inner = isA ? lineInner(ln.text, li++, lo) : esc(ln.text);
+    return `<div class="ln ${cls}"${isA ? ` data-li="${li - 1}"` : ''} style="padding-inline-start:${ind + hang}em;text-indent:-${hang}em;white-space:${ws}">${inner || '&nbsp;'}</div>`;
+  };
+  return `<div class="bi">${rows.map(r => `<div class="bi-row" style="${r.gap ? `margin-top:${(lhpx * g * r.gap).toFixed(1)}px` : ''}">${cell(r.a, 'bi-a', true)}${cell(r.b, 'bi-b', false)}</div>`).join('')}</div>`;
 }
 
 // ---------- covers ----------
@@ -452,7 +519,7 @@ function newPoem(d, colId) {
   if (d.authorNick && authorId) { const a = authorById(authorId); if (a && !a.bio) a.bio = `PTT 暱稱：${d.authorNick}`; }
   const now = Date.now();
   return { id: uid(), title: d.title || '無題', authorId, type, collectionId: colId || null, tags: [...(d.tags || [])], text: d.text || '', layout: defLayout(type), fav: false,
-    source: d.source || '', date: d.date || '', note: d.note || '', illustration: d.illustration || null, sourceImg: d.sourceImg || null, created: d.created || now, updated: now };
+    source: d.source || '', date: d.date || '', note: d.note || '', illustration: d.illustration || null, sourceImg: d.sourceImg || null, trans: d.trans || '', created: d.created || now, updated: now };
 }
 let PENDING = null; // draft passed to editor
 async function importFiles(files, colId) {
@@ -515,10 +582,13 @@ function render() {
   else if (r.view === 'history') { app.innerHTML = ShiX.historyView(r.id); ShiX.historyLoad(r.id); }
   else if (r.view === 'cols') { app.innerHTML = colsView(); }
   else if (r.view === 'search') { app.innerHTML = searchView(); const q = $('#q'); if (q && !HF.q) setTimeout(() => q.focus(), 50); }
-  else if (r.view === 'favs') { app.innerHTML = favsView(); }
+  else if (r.view === 'favs') { app.innerHTML = ShiR.libView(r.q.get('tab')); }
+  else if (r.view === 'memo' && poemById(r.id)) { app.innerHTML = ShiR.memoView(poemById(r.id)); }
+  else if (r.view === 'today') { const tp = ShiR.todayPoem(); location.replace(tp ? '#/read/' + tp.id : '#/'); return; }
   else if (r.view === 'import' && IMP) { app.innerHTML = importView(); }
   else if (r.view === 'print') { renderPrint(r); return; }
   else {
+    if (ShiR.maybeAutoToday(r)) return;
     if (r.q.get('src') !== null) { HF.src = r.q.get('src') || 'all'; HF.type = 'all'; HF.col = 'all'; HF.author = 'all'; HF.dyn = 'all'; HF.q = ''; }
     app.innerHTML = homeView();
     if (r.q.get('src') !== null) requestAnimationFrame(() => { const g = $('#grid'); if (g) g.closest('section').scrollIntoView({ block: 'start' }); });
@@ -544,7 +614,7 @@ function cardHTML(p) {
 function cardInner(p, L, st, sel) {
   const sts = stanzas(p.text);
   const ex = (sts[0] ? sts[0].lines.slice(0, 3) : []).map(l => (L.keep ? '　'.repeat(Math.round(l.ind)) : '') + l.text).join('\n');
-  const vert = L.style === 'vertical';
+  const vert = L.dir === 'v';
   const review = (p.tags || []).includes('待校對');
   const on = sel && SEL.ids.has(p.id);
   const open = sel ? `<button type="button" class="pcard sel${on ? ' on' : ''}" data-act="sel-toggle" data-id="${p.id}" aria-pressed="${on}"><span class="selbox" aria-hidden="true">${on ? '✓' : ''}</span>` : `<a class="pcard" href="#/read/${p.id}" data-id="${p.id}">`;
@@ -598,9 +668,7 @@ function authorChips(limit) {
 }
 function homeView() {
   const ps = live();
-  const day = Math.floor((Date.now() - new Date(new Date().getFullYear(), 0, 0)) / 864e5);
-  const sorted = [...ps].sort(byCreated);
-  const today = sorted.length ? sorted[day % sorted.length] : null;
+  const today = ShiR.todayPoem();
   const last = DB.prefs.last && poemById(DB.prefs.last);
   let hero = '';
   if (today) {
@@ -653,6 +721,7 @@ function homeView() {
       </div>
     </section>
     ${ShiX.recCardHTML()}
+    <section class="sec-block d-only"><div class="row lib-links"><h2 class="sec" style="margin-right:8px">我的書房</h2><a class="btn sq" href="#/favs?tab=favs">★ 收藏的詩（${ps.filter(p => p.fav).length}）</a><a class="btn sq" href="#/favs?tab=marks">劃線與筆記（${ps.reduce((a, p) => a + (p.marks || []).length, 0)}）</a><a class="btn sq" href="#/favs?tab=memo">背過的詩（${ps.filter(p => p.memo && p.memo.n).length}）</a></div></section>
 
     <section class="sec-block">
       <div class="row" style="justify-content:space-between"><h2 class="sec">詩集</h2></div>
@@ -689,6 +758,7 @@ function homeView() {
       <div class="row">
         <span class="muted">預設字體</span>
         <div class="seg" style="display:inline-grid">${Object.entries(FONTS).map(([k, v]) => `<button type="button" data-act="set-font" data-v="${k}" class="${DB.prefs.defaultFont === k ? 'on' : ''}" aria-pressed="${DB.prefs.defaultFont === k}" style="height:36px;padding:0 14px">${v[0]}</button>`).join('')}</div>
+        <button type="button" class="btn ghost" data-act="today-auto" aria-pressed="${ShiR.todayAuto()}" title="每天第一次打開詩頁時，先顯示今日一詩">${ShiR.todayAuto() ? '✓ ' : ''}每天先看今日一詩</button>
         <a class="btn ghost" href="#/trash">回收桶${trashed().length ? `（${trashed().length}）` : ''}</a>
         <button type="button" class="btn ghost" data-act="backup">匯出備份</button>
         <label class="btn ghost" for="f-restore">匯入備份</label>
@@ -757,12 +827,12 @@ function startNew(colId, authorId) {
   const d = PENDING || { title: '', text: '', type: 'modern' };
   PENDING = null;
   const a = authorId && authorById(authorId);
-  ED = { id: null, title: d.title, authorName: a ? a.name : (d.authorName || ''), dynasty: a ? a.dynasty : (d.dynasty || ''), type: d.type || 'modern', collectionId: d.collectionId ?? colId ?? null, tags: d.tags || [], text: d.text, imported: !!d.text, shared: !!d.shared, sourceImg: d.sourceImg || null, ocr: !!d.ocr, vertical: !!d.vertical, ocrLang: d.ocrLang || '', source: d.source || '', date: d.date || '', note: d.note || '', illustration: d.illustration || null, authorNick: d.authorNick || '', fromRec: d.fromRec || null, recAsk: d.recAsk || null, phoneOcr: !!d.phoneOcr };
+  ED = { id: null, title: d.title, authorName: a ? a.name : (d.authorName || ''), dynasty: a ? a.dynasty : (d.dynasty || ''), type: d.type || 'modern', collectionId: d.collectionId ?? colId ?? null, tags: d.tags || [], text: d.text, imported: !!d.text, shared: !!d.shared, sourceImg: d.sourceImg || null, ocr: !!d.ocr, vertical: !!d.vertical, ocrLang: d.ocrLang || '', source: d.source || '', date: d.date || '', note: d.note || '', illustration: d.illustration || null, authorNick: d.authorNick || '', trans: d.trans || '', fromRec: d.fromRec || null, recAsk: d.recAsk || null, phoneOcr: !!d.phoneOcr };
   return ED;
 }
 function startEdit(p) {
   const a = authorOf(p);
-  ED = { id: p.id, title: p.title, authorName: a ? a.name : '', dynasty: a ? a.dynasty : '', type: p.type, collectionId: p.collectionId, tags: [...(p.tags || [])], text: p.text, sourceImg: p.sourceImg || null, ocr: (p.tags || []).includes('待校對'), source: p.source || '', date: p.date || '', note: p.note || '', illustration: p.illustration || null };
+  ED = { trans: p.trans || '', id: p.id, title: p.title, authorName: a ? a.name : '', dynasty: a ? a.dynasty : '', type: p.type, collectionId: p.collectionId, tags: [...(p.tags || [])], text: p.text, sourceImg: p.sourceImg || null, ocr: (p.tags || []).includes('待校對'), source: p.source || '', date: p.date || '', note: p.note || '', illustration: p.illustration || null };
   return ED;
 }
 function colOptions(sel) {
@@ -834,6 +904,10 @@ function editorView(e) {
       <label for="ed-text" class="sr">詩的內容</label>
       <textarea id="ed-text" class="ed-text" data-in="ed-text" spellcheck="false" placeholder="在這裡寫下或貼上你的詩。&#10;&#10;空一行代表分節。&#10;行首的空格會原樣保留。">${esc(e.text)}</textarea>
       <div class="ed-foot" id="ed-stats"></div>
+      <details class="trans-panel"${e.trans ? ' open' : ''}>
+        <summary>對照譯文（選填）</summary>
+        <textarea class="ed-text trans-ta" data-in="ed-trans" spellcheck="false" placeholder="例如英文詩的中文翻譯。一行對一行，空一行分節；閱讀時會和原文並排。">${esc(e.trans || '')}</textarea>
+      </details>
     </section>
     <aside class="side" style="flex:1 1 ${e.sourceImg ? '320px' : '260px'}">
       ${e.sourceImg ? `<div class="card panel">
@@ -904,7 +978,7 @@ function edSave() {
   if (e.text.trim()) tags = tags.filter(t => t !== '待辨識');
   const rv = $('[data-in=ed-review]');
   if (rv && rv.checked) tags.push('待校對');
-  const data = { title: e.title.trim() || '無題', authorId: resolveAuthor(e.authorName, e.dynasty), type: e.type, collectionId: e.collectionId || null, tags, text: e.text.replace(/\s+$/, ''), sourceImg: e.sourceImg || null, source: e.source.trim(), date: e.date, note: e.note.trim(), illustration: e.illustration || null, authorNick: e.authorNick || '' };
+  const data = { title: e.title.trim() || '無題', authorId: resolveAuthor(e.authorName, e.dynasty), type: e.type, collectionId: e.collectionId || null, tags, text: e.text.replace(/\s+$/, ''), sourceImg: e.sourceImg || null, source: e.source.trim(), date: e.date, note: e.note.trim(), illustration: e.illustration || null, authorNick: e.authorNick || '', trans: (e.trans || '').replace(/\s+$/, '') };
   let p;
   if (e.id) {
     p = poemById(e.id);
@@ -985,6 +1059,8 @@ function readerView(p) {
       <span class="muted" id="stylename">· ${st.name}</span>
     </div>
     <div class="row d-only">
+      <button type="button" class="btn" data-act="tts-start">聽這首詩</button>
+      <a class="btn" href="#/memo/${p.id}">背誦</a>
       <a class="btn" href="#/edit/${p.id}">編輯</a>
       <button type="button" class="btn" data-act="export-open">導出圖片／PDF</button>
       <button type="button" class="btn ghost danger" data-act="del-poem">移到回收桶</button>
@@ -995,7 +1071,9 @@ function readerView(p) {
     </div>
   </div></header>
   <div class="mbar m-only" role="toolbar" aria-label="快速切換風格">
-    ${[['vertical', '直排'], [p.type === 'classic' ? 'classic' : 'magazine', '書頁'], ['night', '夜讀']].map(([k, n]) => `<button type="button" data-act="lay" data-k="style" data-v="${k}" class="${layoutOf(p).style === k ? 'on' : ''}" aria-pressed="${layoutOf(p).style === k}">${n}</button>`).join('')}
+    ${p.type !== 'shape' ? `<button type="button" data-act="lay-dir" class="dirbtn${L.dir === 'v' ? ' on' : ''}" aria-pressed="${L.dir === 'v'}" aria-label="切換直排或橫排">${L.dir === 'v' ? '直排' : '橫排'}</button>` : ''}
+    ${[[p.type === 'classic' ? 'classic' : 'magazine', '書頁'], ['night', '夜讀']].map(([k, n]) => `<button type="button" data-act="lay" data-k="style" data-v="${k}" class="${layoutOf(p).style === k ? 'on' : ''}" aria-pressed="${layoutOf(p).style === k}">${n}</button>`).join('')}
+    <button type="button" data-act="tts-start" class="ico" aria-label="聽這首詩"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5L6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></svg></button>
     <button type="button" data-act="sheet-toggle" aria-label="更多排版設定" class="ico"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg></button>
   </div>
   <div class="sheet-bg m-only" data-act="sheet-toggle"></div>
@@ -1024,7 +1102,14 @@ function controlsInner(p, L) {
   const order = p.type === 'classic' ? ['classic', 'vertical', 'manuscript', 'night', 'magazine', 'recite', 'shape'] : ['magazine', 'recite', 'shape', 'classic', 'night', 'manuscript', 'vertical'];
   const col = p.collectionId && colById(p.collectionId);
   const au = authorOf(p);
+  const vOK = p.type !== 'shape' && L.style !== 'shape';
+  const hasTr = !!(p.trans && p.trans.trim());
   return `
+    <section><h2 class="label">閱讀方向</h2>
+      ${vOK ? `<div class="seg dirseg">${[['h', '橫排'], ['v', '直排']].map(([k, n]) => `<button type="button" data-act="lay" data-k="dir" data-v="${k}" class="${L.dir === k ? 'on' : ''}" aria-pressed="${L.dir === k}">${n}</button>`).join('')}</div>
+      ${hasTr && L.bi === 'on' && L.dir === 'v' ? '<p class="note" style="margin:0">顯示對照譯文時會用橫排。</p>' : `<p class="note d-only" style="margin:0">按鍵盤 V 鍵也可以切換。直排的長詩可以左右捲動。</p>`}` : '<p class="note" style="margin:0">圖像詩固定橫排，不會改變排列。</p>'}
+    </section>
+    ${hasTr ? `<section><h2 class="label">對照譯文</h2>${seg('bi', [['on', '原文＋譯文'], ['off', '只看原文']], L.bi)}</section>` : ''}
     <section><h2 class="label">顯示風格</h2>
       <div class="stylegrid">${order.map(k => { const s = STYLES[k]; return `<button type="button" class="stylebtn${L.style === k ? ' on' : ''}" data-act="lay" data-k="style" data-v="${k}" aria-pressed="${L.style === k}">
         <div class="sw-art" style="background:${s.bg};color:${s.fg};${k === 'magazine' ? 'font-family:var(--sans);font-weight:900;' : ''}"><span style="${k === 'vertical' ? 'writing-mode:vertical-rl;font-size:12px' : ''}">${k === 'shape' ? '形　狀' : k === 'recite' ? '讀　一節' : '明月光'}</span></div>
@@ -1045,6 +1130,7 @@ function controlsInner(p, L) {
     <section style="gap:0"><h2 class="label" style="margin-bottom:8px">斷行與空白</h2>
       ${tg('keep', '保留原始空白與縮排', '行首與句中的空格都照原稿')}
       ${tg('hang', '長句懸掛縮排', '自動折行的部分往內縮，看得出原本的斷行')}
+      ${tg('seal', '加上印章', '詩的角落蓋一個「詩」字印')}
     </section>
     <section>
       <button type="button" class="btn sq" data-act="lay-reset">恢復預設</button>
@@ -1059,6 +1145,7 @@ function readerUpdate(p, full = true) {
   if (full) { const c = $('#controls'); if (c) { const sc = c.scrollTop; c.innerHTML = controlsHTML(p, L); c.scrollTop = sc; } }
   const sn = $('#stylename'); if (sn) sn.textContent = '· ' + STYLES[L.style].name;
   document.querySelectorAll('.mbar [data-k=style]').forEach(b => { const on = b.dataset.v === L.style; b.classList.toggle('on', on); b.setAttribute('aria-pressed', on); });
+  const db = $('.mbar .dirbtn'); if (db) { db.classList.toggle('on', L.dir === 'v'); db.setAttribute('aria-pressed', L.dir === 'v'); db.textContent = L.dir === 'v' ? '直排' : '橫排'; }
 }
 
 // ---------- continuous scroll ----------
@@ -1575,13 +1662,15 @@ async function renderPrint(r) {
     const title = q.get('title') || '';
     const col = q.get('cover') && colById(q.get('cover'));
     const multi = ps.length > 1;
-    let html = `<style>@page{size:${paper};margin:14mm 14mm 16mm}${multi ? '@page{@bottom-center{content:counter(page);font:10pt "Noto Serif TC",serif;color:#8a857a}}@page:first{@bottom-center{content:none}}' : ''}</style>`;
+    let html = `<style>.xpoem .art.vdir{height:${paper === 'A5' ? 150 : 225}mm}@page{size:${paper};margin:14mm 14mm 16mm}${multi ? '@page{@bottom-center{content:counter(page);font:10pt "Noto Serif TC",serif;color:#8a857a}}@page:first{@bottom-center{content:none}}' : ''}</style>`;
     const pageH = paper === 'A5' ? 178 : 265;
     if (col) html += `<section class="xpage xcover" style="min-height:${pageH}mm"><div class="bookwrap"><div class="spine" style="background:${darker(col.cover.color, .72)}"><span style="color:${col.cover.ink === 'dark' && !col.cover.img ? '#1C1B19' : '#F6F1E6'}">${esc(col.name)}</span></div>${coverHTML(col, 'lg')}</div></section>`;
     else if (multi) html += `<section class="xpage xtitle" style="min-height:${pageH}mm"><div class="xseal">${SEAL}</div><h1>${esc(title || '詩選')}</h1><p>${ps.length} 首</p></section>`;
     if (multi) html += `<section class="xpage xtoc"><h2>目錄</h2><ol>${ps.map(p => `<li><a href="#x-${p.id}"><span class="tt">${esc(p.title)}</span><span class="toc-a">${esc(authorLabel(authorOf(p)))}</span></a></li>`).join('')}</ol></section>`;
     html += ps.map(p => {
       const L = flowLayout(unify ? layoutOf(unify) : layoutOf(p), p);
+      // PDF 的直排一頁放不下長詩：超過 16 行改用橫排
+      if (L.dir === 'v' && stanzas(p.text).reduce((a, x) => a + x.lines.length + 1, 0) > 18) L.dir = 'h';
       return `<section class="xpage xpoem" id="x-${p.id}">${illusHTML(p)}${articleHTML(p, L)}${afterHTML(p)}</section>`;
     }).join('');
     app.innerHTML = html;
@@ -1679,6 +1768,16 @@ function syncView() {
         <li>加入動作「URL 編碼」，再加入「打開 URL」，網址填：<code>${site}#/new?page=1&amp;text=</code>，最後面插入變數「URL 編碼文字」。</li>
         <li>按「完成」。動作的名稱在不同 iOS 版本可能略有不同。</li>
       </ol>
+    </div>
+    <div class="card panel">
+      <p class="label">每天早上打開今日一詩</p>
+      <p class="note" style="margin:0">用「捷徑」的個人自動化，每天固定時間打開今天的詩（從你的詩庫裡挑）。</p>
+      <ol class="steps">
+        <li>打開「捷徑」App → 下方「自動化」→ 右上角「＋」→「特定時間」。</li>
+        <li>設定時間（例如早上 8:00）、選「每天」，再選「立即執行」，按「下一步」。</li>
+        <li>加入動作「打開 URL」，網址填：<code>${site}#/today</code>，按「完成」。</li>
+      </ol>
+      <p class="note" style="margin:0">iPhone 會用 Safari 打開這個網址。Safari 和主畫面上的詩頁資料是分開的，所以第一次要在 Safari 裡也到「同步」貼上同一組密鑰，之後就會看到同一份詩。<br>也可以只打開首頁最下方的「每天先看今日一詩」，每天第一次打開詩頁就會先顯示今天的詩。</p>
     </div>`}
   </main>`;
 }
@@ -1694,7 +1793,7 @@ function mobileChrome(r) {
   if (!show) { if (bar) bar.remove(); const f = $('#fab'); if (f) f.remove(); document.body.classList.remove('has-tabbar'); return; }
   document.body.classList.add('has-tabbar');
   const cur = r.view === 'author' ? 'authors' : r.view === 'col' ? 'cols' : r.view;
-  const tabs = [['home', '首頁', '詩'], ['authors', '作者', '人'], ['cols', '詩集', '冊'], ['search', '搜尋', '尋'], ['favs', '收藏', '☆']];
+  const tabs = [['home', '首頁', '詩'], ['authors', '作者', '人'], ['cols', '詩集', '冊'], ['search', '搜尋', '尋'], ['favs', '書房', '☆']];
   if (!bar) { bar = document.createElement('nav'); bar.id = 'tabbar'; bar.className = 'tabbar'; bar.setAttribute('aria-label', '主要分頁'); document.body.appendChild(bar); }
   bar.innerHTML = tabs.map(([k, n, g]) => `<a href="${TAB_VIEWS[k]}" class="${cur === k ? 'on' : ''}"${cur === k ? ' aria-current="page"' : ''}><span class="tg" aria-hidden="true">${g}</span>${n}</a>`).join('');
   let fab = $('#fab');
@@ -1730,7 +1829,9 @@ function favsView() {
 let touch0 = null;
 document.addEventListener('touchstart', e => {
   if (route().view !== 'read' || e.touches.length !== 1 || e.target.closest('.controls, .mbar, .bar, .modal-bg, button, a, input')) { touch0 = null; return; }
-  const t = e.touches[0]; touch0 = { x: t.clientX, y: t.clientY, at: Date.now(), sc: e.target.closest('.art') };
+  if (e.target.closest('mark.hl')) { touch0 = null; return; }
+  const t = e.touches[0], sc = e.target.closest('.art');
+  touch0 = { x: t.clientX, y: t.clientY, at: Date.now(), sc, sl: sc ? sc.scrollLeft : 0 };
 }, { passive: true });
 document.addEventListener('touchend', e => {
   if (!touch0) return;
@@ -1738,12 +1839,30 @@ document.addEventListener('touchend', e => {
   const start = touch0; touch0 = null;
   const p = poemById(route().id); if (!p) return;
   if (Math.abs(dx) > 70 && Math.abs(dy) < 60 && dt < 700) {
-    const a = start.sc;  // 直排時文章本身可以左右捲：捲到盡頭才換首
-    if (a && a.scrollWidth > a.clientWidth + 4) { const atStart = a.scrollLeft >= -2 && a.scrollLeft <= 2, atEnd = Math.abs(a.scrollLeft) + a.clientWidth >= a.scrollWidth - 2; if (!(dx > 0 ? atEnd || atStart : atStart || atEnd)) return; }
+    if (window.getSelection && String(window.getSelection()).trim()) return;
+    const a = start.sc;
+    if (a && a.classList.contains('vdir')) {
+      // 直排像翻書：往右滑讀下去，捲到最左邊（詩的結尾）再往右滑才換下一首；在最右邊（開頭）往左滑回上一首
+      const scrollable = a.scrollWidth > a.clientWidth + 4;
+      const atStart = Math.abs(start.sl) <= 2, atEnd = Math.abs(start.sl) + a.clientWidth >= a.scrollWidth - 2;
+      if (dx > 0 && (!scrollable || atEnd)) goNeighbor(p, 'next');
+      else if (dx < 0 && (!scrollable || atStart)) goNeighbor(p, 'prev');
+      return;
+    }
     goNeighbor(p, dx < 0 ? 'next' : 'prev'); return;
   }
+  if (e.target.closest && e.target.closest('mark.hl')) return;
   if (Math.abs(dx) < 8 && Math.abs(dy) < 8 && dt < 400 && isMobile()) document.body.classList.toggle('chrome-off');
 });
+
+// 直排的詩：滑鼠滾輪往下＝往左讀
+document.addEventListener('wheel', e => {
+  const a = e.target.closest && e.target.closest('.art.vdir'); if (!a || a.scrollWidth <= a.clientWidth + 2) return;
+  if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+  const max = a.scrollWidth - a.clientWidth, cur = Math.abs(a.scrollLeft);
+  if ((e.deltaY > 0 && cur >= max - 1) || (e.deltaY < 0 && cur <= 1)) return;   // 到頭了就讓頁面正常捲
+  e.preventDefault(); a.scrollLeft -= e.deltaY;
+}, { passive: false });
 
 // ---------- 手機：分享成圖片（直接在手機上畫） ----------
 const SHARE_SIZES = { story: ['限時動態', 1080, 1920], square: ['正方形', 1080, 1080], auto: ['長圖', 1080, 0], wall: ['桌布', 1920, 1080] };
@@ -1759,9 +1878,15 @@ async function drawPoem(p, L, W, H, sign) {
   const fam = CANVAS_FONTS[fontKey(L, st)] || CANVAS_FONTS.kai;
   try { await Promise.all(['400', '700'].map(w => document.fonts.load(`${w} 40px ${fam.split(',')[0]}`, '詩頁'))); } catch (e) {}
   const au = authorOf(p);
-  const vertical = L.style === 'vertical';
+  let vertical = L.dir === 'v' && p.type !== 'shape';
   const rows = [];
   stanzas(p.text).forEach((s, si) => s.lines.forEach((ln, i) => rows.push({ text: ln.text, ind: L.keep ? ln.ind : 0, gap: i === 0 && si > 0 ? Math.min(s.gapMul || 1, 2) : 0 })));
+  // 直排的長詩做成圖片字會太小：改用橫排
+  if (vertical) {
+    const fs0 = W / 30, per = Math.max(4, Math.floor((H || 1920) * .62 / (fs0 * 1.18)));
+    const cols = rows.reduce((a, r) => a + (r.gap ? 1 : 0) + Math.max(1, Math.ceil(([...r.text].length + Math.round(r.ind)) / per)), 0);
+    if (cols * fs0 * (LH[L.lh] ? LH[L.lh][1] : 2.2) * .8 > W * .8) vertical = false;
+  }
   const cv = document.createElement('canvas'), x = cv.getContext('2d');
   const font = (size, bold) => `${bold ? 700 : 400} ${size}px ${fam}`;
   const lhK = LH[L.lh] ? LH[L.lh][1] : 2.2;
@@ -1825,7 +1950,8 @@ async function drawPoem(p, L, W, H, sign) {
     x.fillStyle = st.bg; x.fillRect(0, 0, W, H); x.fillStyle = st.fg; x.textAlign = 'center'; x.textBaseline = 'middle';
     let cx = (W + layout.w) / 2 - layout.fs;
     const top = (H - layout.colH) / 2 + layout.fs * .6;
-    const drawCol = (t, size, bold, xx) => { x.font = font(size, bold); [...t].forEach((ch, i) => x.fillText(ch, xx, top + i * size * 1.18)); };
+    const VP = { '，': '︐', '。': '︒', '、': '︑', '：': '︓', '；': '︔', '！': '︕', '？': '︖', '「': '﹁', '」': '﹂', '『': '﹃', '』': '﹄', '（': '︵', '）': '︶', '《': '︽', '》': '︾', '〈': '︿', '〉': '﹀', '…': '︙', '—': '︱', '─': '︱', '～': '≀' };
+    const drawCol = (t, size, bold, xx) => { x.font = font(size, bold); [...t].forEach((ch, i) => x.fillText(VP[ch] || ch, xx, top + i * size * 1.18)); };
     drawCol(p.title || '無題', layout.fs * 1.3, true, cx); cx -= layout.fs * 2;
     if (au) { x.globalAlpha = .7; drawCol(authorLabel(au).replace(' · ', '　'), layout.fs * .62, false, cx + layout.fs * .4); x.globalAlpha = 1; cx -= layout.fs * 1.3; }
     layout.cols.forEach(c => { if (c) drawCol(c.t, layout.fs, false, cx); cx -= layout.colW; });
@@ -1982,8 +2108,9 @@ document.addEventListener('click', e => {
     case 'flow-scope': DB.prefs.scope = b.dataset.v; save(); render(); break;
     case 'go-prev': if (p) goNeighbor(p, 'prev'); break;
     case 'go-next': if (p) goNeighbor(p, 'next'); break;
-    case 'lay': if (p) { touch(p); p.layout[b.dataset.k] = b.dataset.v; if (b.dataset.k === 'style') { p.layout.align = null; p.layout.font = null; RS = 0; } save(); readerUpdate(p); } break;
-    case 'lay-tg': if (p) { touch(p); p.layout[b.dataset.k] = !p.layout[b.dataset.k]; save(); readerUpdate(p); } break;
+    case 'lay-dir': if (p) { touch(p); p.layout.dir = layoutOf(p).dir === 'v' ? 'h' : 'v'; save(); readerUpdate(p); toast(p.layout.dir === 'v' ? '直排：由右往左讀' : '橫排'); } break;
+    case 'lay': if (p) { touch(p); if (b.dataset.k === 'style' && !p.layout.dir) p.layout.dir = layoutOf(p).dir; p.layout[b.dataset.k] = b.dataset.v; if (b.dataset.k === 'style') { p.layout.align = null; p.layout.font = null; RS = 0; } save(); readerUpdate(p); } break;
+    case 'lay-tg': if (p) { touch(p); p.layout[b.dataset.k] = !layoutOf(p)[b.dataset.k]; save(); readerUpdate(p); } break;
     case 'size': if (p) { touch(p); p.layout.size = clamp(p.layout.size + Number(b.dataset.v), 14, 40); save(); readerUpdate(p); } break;
     case 'lay-reset': if (p) { touch(p); p.layout = defLayout(p.type); save(); readerUpdate(p); } break;
     case 'lay-all': if (p) {
@@ -2039,6 +2166,7 @@ document.addEventListener('input', e => {
   else if (k === 'ed-note') { ED.note = t.value; }
   else if (k === 'ed-tags') { ED.tags = t.value.split(/[\s,，、]+/).filter(Boolean); }
   else if (k === 'ed-text') { ED.text = t.value; edRefresh(); }
+  else if (k === 'ed-trans') { ED.trans = t.value; }
   else if (k === 'ed-col') {
     if (t.value === '__new') { const nc = newCollection(); ED.collectionId = nc ? nc.id : ED.collectionId; t.innerHTML = colOptions(ED.collectionId); t.value = ED.collectionId || ''; }
     else ED.collectionId = t.value || null;
@@ -2120,6 +2248,7 @@ document.addEventListener('keydown', e => {
   const r = route();
   if (r.view !== 'read') return;
   const p = poemById(r.id); if (!p) return;
+  if ((e.key === 'v' || e.key === 'V') && p.type !== 'shape') { e.preventDefault(); const b0 = document.createElement('button'); b0.dataset.act = 'lay-dir'; document.body.appendChild(b0); b0.click(); b0.remove(); return; }
   const recite = layoutOf(p).style === 'recite';
   const fwd = e.key === 'ArrowRight' || (recite && (e.key === 'ArrowDown' || e.key === ' '));
   const back = e.key === 'ArrowLeft' || (recite && e.key === 'ArrowUp');
