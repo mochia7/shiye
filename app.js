@@ -1,5 +1,5 @@
 'use strict';
-/* 詩頁 v0.4 — 詩篇閱讀與排版 */
+/* 詩頁 v0.5 — 詩篇閱讀與排版 */
 
 // ---------- helpers ----------
 const $ = (s, r = document) => r.querySelector(s);
@@ -56,7 +56,7 @@ function sourceGroups() {
   live().forEach(p => { const k = srcKey(p.source); if (k) m.set(k, (m.get(k) || 0) + 1); });
   return [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'zh-Hant'));
 }
-const VERSION = '0.4.0';
+const VERSION = '0.5.0';
 const PRINT = /^#\/print/.test(location.hash);
 const fontKey = (L, st) => L.font || (DB && DB.prefs && DB.prefs.defaultFont) || st.font;
 const live = () => DB.poems.filter(p => !p.deleted);
@@ -335,15 +335,32 @@ function parseImported(text, filename, ext) {
   return { title: r.title, authorName: r.authorName, dynasty: r.dynasty, authorNick: r.authorNick, text: r.text, type: r.type, source: r.source, date: r.date, tags: r.tags, note: r.note, flags: r.flags };
 }
 // 從別的 App 分享過來的文字：短的第一行當標題，「作者：」行當作者
-function parseShared(text) {
-  text = String(text || '').replace(/\r\n?/g, '\n').trim();
-  let author = '';
-  text = text.replace(/^[ \t　]*(?:作者|文|詩)[ \t　]*[:：／/][ \t　]*(.{1,20})[ \t　]*$/m, (m, a) => { if (!author) { author = a.trim(); return '\u0000'; } return m; }).replace(/\n?\u0000\n?/, '\n');
-  const first = (text.split('\n')[0] || '').trim();
-  const short = first && first.length <= 20 && text.includes('\n');
-  const p = parseImported(text, short ? first + '.txt' : '', 'txt');
-  if (!short) { p.title = '無題'; p.text = text; }
-  if (author && !p.authorName) p.authorName = author;
+function parseShared(text, opt = {}) {
+  const sm = ShiImport.smartParse(text, opt);
+  let p;
+  if (sm.title) p = { title: sm.title, authorName: sm.authorName, dynasty: '', text: sm.text, type: ShiImport.guessType(sm.text, ''), source: sm.source, date: '', tags: [], note: sm.note, flags: [] };
+  else {
+    const t = sm.text;
+    const ls0 = t.split('\n'), first = (ls0[0] || '').trim(), second = (ls0[1] || '').trim();
+    // 第一行後面空一行（或下一行是作者）才當標題，不然整段都是詩
+    const short = first && first.length <= 20 && ls0.length > 1 && (!second || /^(?:作者|文)[:：]/.test(second) || (/^[\u4e00-\u9fff]{2,4}$/.test(second) && !(ls0[2] || '').trim()));
+    p = parseImported(t, short ? first + '.txt' : '', 'txt');
+    if (!short) { p.title = '無題'; p.text = t; }
+    if (sm.authorName && !p.authorName) p.authorName = sm.authorName;
+    p.note = [sm.note, p.note].filter(Boolean).join('\n'); p.source = p.source || sm.source;
+  }
+  // 從「每日推薦」來的：標題、作者用推薦的
+  const rec = opt.rec;
+  if (rec) {
+    const k = ShiImport.normKey(rec.title);
+    if (!p.title || p.title === '無題' || ShiImport.normKey(p.title) !== k) {
+      if (p.title && p.title !== '無題' && ShiImport.normKey(p.title) !== k && !ShiImport.normKey(p.text).startsWith(ShiImport.normKey(p.title))) p.text = p.title + '\n' + p.text;
+      p.title = rec.title;
+    }
+    if (!p.authorName) p.authorName = rec.author;
+    if (!p.source && rec.src) p.source = rec.src;
+    p.type = 'modern';
+  }
   p.shared = true;
   return p;
 }
@@ -380,12 +397,12 @@ function joinWords(words) {
 }
 const median = a => { if (!a.length) return 0; const b = [...a].sort((x, y) => x - y); return b[Math.floor(b.length / 2)]; };
 // 把辨識結果的每一行，依位置推回縮排與分節
-function ocrToText(lines) {
+function ocrToText(lines, gapK = 1.65, robust = false) {
   lines = (lines || []).filter(l => (l.words || []).length || l.text);
   if (!lines.length) return { text: '', vertical: false };
   lines.forEach(l => {
     const ws = l.words && l.words.length ? l.words : [{ text: l.text, x: l.x, y: l.y, w: l.w, h: l.h }];
-    l.words = ws; l.x = Math.min(...ws.map(w => w.x)); l.y = Math.min(...ws.map(w => w.y));
+    l.words = ws; l.x = Math.min(...ws.map(w => w.x)); l.y = robust ? median(ws.map(w => w.y)) : Math.min(...ws.map(w => w.y));
     l.h = Math.max(...ws.map(w => w.y + w.h)) - l.y; l.str = joinWords(ws);
   });
   lines.sort((a, b) => a.y - b.y);
@@ -393,10 +410,10 @@ function ocrToText(lines) {
   const charW = median(cjkW) || median(lines.map(l => l.h)) || 1;
   const minX = Math.min(...lines.map(l => l.x));
   const dys = lines.slice(1).map((l, i) => l.y - lines[i].y).filter(d => d > 0);
-  const step = median(dys) || charW * 2;
+  const step = (robust ? [...dys].sort((a, b) => a - b)[Math.floor(dys.length * .3)] : median(dys)) || charW * 2;
   const out = [];
   lines.forEach((l, i) => {
-    if (i > 0 && l.y - lines[i - 1].y > step * 1.65) out.push('');
+    if (i > 0 && l.y - lines[i - 1].y > step * gapK) out.push('');
     const ind = Math.round((l.x - minX) / charW);
     out.push((ind > 0 ? '　'.repeat(Math.min(ind, 24)) : '') + l.str.trim());
   });
@@ -407,6 +424,12 @@ async function ocrFile(file) {
   if (!serverMode) {
     const blob = await shrinkImage(file, 2400, 'image/jpeg');
     const sourceImg = await ShiSync.storeImage(blob);
+    // 先在手機上辨識；失敗（例如第一次使用又沒網路）就留給電腦版
+    const got = await ShiX.phoneOCR(blob).catch(() => null);
+    if (got && got.text.trim()) {
+      const d = parseShared(got.text, { ocr: true });
+      return Object.assign(d, { sourceImg, ocr: true, phoneOcr: true, vertical: got.vertical, tags: [...(d.tags || [])], shared: false });
+    }
     return { title: '待辨識的照片', authorName: '', dynasty: '', text: '', type: 'modern', source: '', date: '', tags: ['待辨識'], note: '', flags: [], sourceImg, ocr: true, pendingOCR: true };
   }
   toast('辨識中，請稍候…', 60000);
@@ -450,6 +473,7 @@ async function importFiles(files, colId) {
   drafts.forEach(d => {
     const p = newPoem(d, colId);
     if (d.ocr) p.tags = d.pendingOCR ? ['待辨識'] : ['待校對'];
+    if (d.text && findDup(d.text)) p.tags.push('可能重複');
     DB.poems.push(p);
   });
   save(); render();
@@ -476,7 +500,11 @@ function render() {
   else if (r.view === 'edit' && poemById(r.id)) { app.innerHTML = editorView(startEdit(poemById(r.id))); edRefresh(); }
   else if (r.view === 'new') {
     // 「存到詩頁」捷徑：#/new?text=…
-    if (r.q.get('text') && !PENDING) { PENDING = parseShared(r.q.get('text')); if (r.q.get('title')) PENDING.title = r.q.get('title'); if (r.q.get('source') && !PENDING.source) PENDING.source = r.q.get('source'); history.replaceState(null, '', '#/new'); }
+    if (r.q.get('text') && !PENDING) {
+      const rec = ShiX.pendingRec(), txt = r.q.get('text');
+      const hit = rec && ShiImport.normKey(txt).includes(ShiImport.normKey(rec.title));
+      PENDING = parseShared(txt, { page: r.q.get('page') === '1', title: rec && rec.title, rec: hit ? rec : null });
+      if (hit) { PENDING.fromRec = rec; ShiX.clearRec(); } else if (rec) PENDING.recAsk = rec; if (r.q.get('title')) PENDING.title = r.q.get('title'); if (r.q.get('source') && !PENDING.source) PENDING.source = r.q.get('source'); history.replaceState(null, '', '#/new'); }
     app.innerHTML = editorView(startNew(r.q.get('col'), r.q.get('author'))); edRefresh();
   }
   else if (r.view === 'col' && colById(r.id)) { app.innerHTML = colView(colById(r.id)); bindCoverDrag(colById(r.id)); }
@@ -484,6 +512,7 @@ function render() {
   else if (r.view === 'authors') { app.innerHTML = authorsView(); }
   else if (r.view === 'trash') { app.innerHTML = trashView(); }
   else if (r.view === 'sync') { app.innerHTML = syncView(); }
+  else if (r.view === 'history') { app.innerHTML = ShiX.historyView(r.id); ShiX.historyLoad(r.id); }
   else if (r.view === 'cols') { app.innerHTML = colsView(); }
   else if (r.view === 'search') { app.innerHTML = searchView(); const q = $('#q'); if (q && !HF.q) setTimeout(() => q.focus(), 50); }
   else if (r.view === 'favs') { app.innerHTML = favsView(); }
@@ -623,6 +652,7 @@ function homeView() {
         </div>
       </div>
     </section>
+    ${ShiX.recCardHTML()}
 
     <section class="sec-block">
       <div class="row" style="justify-content:space-between"><h2 class="sec">詩集</h2></div>
@@ -727,7 +757,7 @@ function startNew(colId, authorId) {
   const d = PENDING || { title: '', text: '', type: 'modern' };
   PENDING = null;
   const a = authorId && authorById(authorId);
-  ED = { id: null, title: d.title, authorName: a ? a.name : (d.authorName || ''), dynasty: a ? a.dynasty : (d.dynasty || ''), type: d.type || 'modern', collectionId: d.collectionId ?? colId ?? null, tags: d.tags || [], text: d.text, imported: !!d.text, shared: !!d.shared, sourceImg: d.sourceImg || null, ocr: !!d.ocr, vertical: !!d.vertical, ocrLang: d.ocrLang || '', source: d.source || '', date: d.date || '', note: d.note || '', illustration: d.illustration || null, authorNick: d.authorNick || '' };
+  ED = { id: null, title: d.title, authorName: a ? a.name : (d.authorName || ''), dynasty: a ? a.dynasty : (d.dynasty || ''), type: d.type || 'modern', collectionId: d.collectionId ?? colId ?? null, tags: d.tags || [], text: d.text, imported: !!d.text, shared: !!d.shared, sourceImg: d.sourceImg || null, ocr: !!d.ocr, vertical: !!d.vertical, ocrLang: d.ocrLang || '', source: d.source || '', date: d.date || '', note: d.note || '', illustration: d.illustration || null, authorNick: d.authorNick || '', fromRec: d.fromRec || null, recAsk: d.recAsk || null, phoneOcr: !!d.phoneOcr };
   return ED;
 }
 function startEdit(p) {
@@ -752,7 +782,9 @@ function editorView(e) {
     </div>
   </div></header>
   <main class="page" style="gap:24px">
-    ${e.ocr && e.tags.includes('待辨識') ? `<div class="banner">這張照片會在<b>電腦版詩頁開著、連上網路時</b>自動辨識成文字，辨識完會出現在這裡並標上「待校對」。<br>想馬上有文字：在「照片」App 打開這張照片，長按文字選取全部、拷貝，再貼到下面的內文。</div>` : e.ocr ? `<div class="banner">這首是從圖片辨識出來的，請對照右邊的原圖校對。斷行、縮排與分節是依照文字在圖片上的位置推測的。${e.vertical ? '<br><b>這張圖看起來是直排文字</b>，Windows 內建辨識對直排的效果比較差，可能需要較多修改。' : ''}${e.ocrLang && !/^zh/i.test(e.ocrLang) ? `<br><b>這台電腦目前用「${esc(e.ocrLang)}」辨識</b>，沒有找到繁體中文的辨識功能，中文字可能辨識不出來。可以到 Windows「設定 → 時間與語言 → 語言與地區」為「中文（繁體，台灣）」安裝語言功能。` : ''}${e.id ? '<br>校對完成後，取消勾選下方的「待校對」再儲存。' : ''}</div>` : ''}
+    ${e.recAsk ? `<div class="banner row" style="justify-content:space-between">這是今日推薦的〈${esc(e.recAsk.title)}〉（${esc(e.recAsk.author)}）嗎？<button type="button" class="btn sq" data-act="x-recapply">是，套用標題和作者</button></div>` : ''}
+    ${e.fromRec && !e.text.trim() ? `<div class="banner">到網路上找〈${esc(e.fromRec.title)}〉的全文，選取詩的部分拷貝，回來按「從剪貼簿貼上」。<div class="row" style="margin-top:10px"><a class="btn sq" href="${esc(ShiX.searchURL(e.fromRec))}" target="_blank" rel="noopener">搜尋全文</a><button type="button" class="btn red sq" data-act="x-paste">從剪貼簿貼上</button></div></div>` : ''}
+    ${e.ocr && e.tags.includes('待辨識') ? `<div class="banner">這張照片會在<b>電腦版詩頁開著、連上網路時</b>自動辨識成文字，辨識完會出現在這裡並標上「待校對」。<br>想馬上有文字：在「照片」App 打開這張照片，長按文字選取全部、拷貝，再貼到下面的內文。</div>` : e.phoneOcr ? `<div class="banner">這首是在手機上從圖片辨識出來的，請對照下方的原圖校對。錯字可能比電腦版多一些，網頁截圖上的連結圖示有時會被辨識成多出來的字。</div>` : e.ocr ? `<div class="banner">這首是從圖片辨識出來的，請對照右邊的原圖校對。斷行、縮排與分節是依照文字在圖片上的位置推測的。${e.vertical ? '<br><b>這張圖看起來是直排文字</b>，Windows 內建辨識對直排的效果比較差，可能需要較多修改。' : ''}${e.ocrLang && !/^zh/i.test(e.ocrLang) ? `<br><b>這台電腦目前用「${esc(e.ocrLang)}」辨識</b>，沒有找到繁體中文的辨識功能，中文字可能辨識不出來。可以到 Windows「設定 → 時間與語言 → 語言與地區」為「中文（繁體，台灣）」安裝語言功能。` : ''}${e.id ? '<br>校對完成後，取消勾選下方的「待校對」再儲存。' : ''}</div>` : ''}
     <div class="wrap">
     <aside class="side" style="flex:1 1 ${e.sourceImg ? '250px' : '280px'}">
       <div class="drop" data-drop="editor" style="padding:22px">
@@ -761,6 +793,11 @@ function editorView(e) {
         <label class="btn sq" for="f-ed">瀏覽檔案</label>
         <input id="f-ed" class="sr" type="file" accept=".txt,.md,.markdown,.docx,text/plain,image/*" data-file="editor">
       </div>
+      ${serverMode ? `<div class="card panel">
+        <p class="label">從網址抓取</p>
+        <div class="row" style="flex-wrap:nowrap"><input id="ed-url" class="search" style="flex:1;min-width:0;height:40px" placeholder="貼上收錄這首詩的網址" autocomplete="off" spellcheck="false"><button type="button" class="btn sq" data-act="x-fetch" style="height:40px">抓取</button></div>
+        <p class="note" style="margin:0">會打開網頁、挑出詩的部分放進下面，請再確認一次。</p>
+      </div>` : ''}
       <div class="card panel">
         <p class="label">詩篇資訊</p>
         <label class="field">標題<input class="serif" data-in="ed-title" value="${esc(e.title)}" placeholder="無題"></label>
@@ -790,6 +827,7 @@ function editorView(e) {
         <button type="button" class="tool" data-act="indent">縮排 →</button>
         <button type="button" class="tool" data-act="outdent">← 取消縮排</button>
         <button type="button" class="tool" data-act="ins-stanza">插入分節</button>
+        <button type="button" class="tool" data-act="x-paste">從剪貼簿貼上</button>
         <span style="flex:1"></span>
         <span class="muted">Tab 鍵會插入全形空格</span>
       </div>
@@ -839,8 +877,29 @@ function edRefresh() {
     <div style="font-size:12px;color:var(--ink3);margin:4px 0 12px">${esc(au)}</div>
     <div style="font-size:14px;line-height:28px">${linesHTML(sts, L, 28)}</div></div>`;
 }
+// 找出內容很像的詩（新增時提醒、匯入時加標籤）
+function findDup(text, exceptId) {
+  const k = ShiImport.normKey(text); if (k.length < 6) return null;
+  let best = null;
+  for (const p of live()) {
+    if (p.id === exceptId) continue;
+    const pk = ShiImport.normKey(p.text);
+    let sc = ShiImport.similarity(k, pk);
+    if (sc < .85 && Math.min(k.length, pk.length) >= 12 && (pk.includes(k) || k.includes(pk))) sc = .9;
+    if (sc >= .85 && (!best || sc > best.sc)) best = { p, sc };
+  }
+  return best;
+}
+function dupAsk(d) {
+  const a = authorOf(d.p);
+  modal({ title: '可能已經有這首了', ok: '仍然新增一首', onOk: () => { ED.dupOk = true; setTimeout(edSave, 0); }, body: `
+    <p style="margin:0;line-height:1.8">詩庫裡的〈<b>${esc(d.p.title)}</b>〉${a ? `（${esc(authorLabel(a))}）` : ''}和這首有 <b>${Math.round(d.sc * 100)}%</b> 相同。</p>
+    <div class="dup-prev serif">${esc(d.p.text.split('\n').filter(l => l.trim()).slice(0, 4).join('\n'))}</div>
+    <div class="row"><a class="btn sq" href="#/read/${d.p.id}" data-act="modal-cancel">打開已有的那首</a><button type="button" class="btn sq" data-act="dup-update" data-id="${d.p.id}">用這次的內容更新它</button></div>` });
+}
 function edSave() {
   const e = ED;
+  if (!e.id && !e.dupOk && e.text.trim()) { const d = findDup(e.text); if (d) { dupAsk(d); return; } }
   let tags = e.tags.filter(t => t !== '待校對');
   if (e.text.trim()) tags = tags.filter(t => t !== '待辨識');
   const rv = $('[data-in=ed-review]');
@@ -1587,6 +1646,7 @@ function syncView() {
       <div class="kv"><span>帳號</span><span>${esc(i.owner)}</span></div>
       <div class="kv"><span>資料位置</span><span>${esc(i.repo)}（私人）</span></div>
       <div class="kv"><span>這台裝置</span><span>${esc(i.device)}</span></div>
+      <a class="btn sq" href="#/history" style="align-self:flex-start">時光機：查看過去的版本</a>
       <button type="button" class="btn ghost sq danger" data-act="sync-off" style="align-self:flex-start">中斷這台裝置的同步</button>
       <p class="note" style="margin:0">中斷後，這台裝置上的詩會留著，只是不再同步；GitHub 上的資料也不會被刪除。</p>
     </div>` : ''}
@@ -1607,6 +1667,17 @@ function syncView() {
         <li>加入動作「URL 編碼」，輸入選「捷徑輸入」。</li>
         <li>加入動作「打開 URL」，網址填：<code>${site}#/new?text=</code>，在最後面插入變數「URL 編碼文字」。</li>
         <li>按「完成」。之後在任何 App 選取文字 → 分享 → 存到詩頁。</li>
+      </ol>
+    </div>
+    <div class="card panel">
+      <p class="label">「整頁存到詩頁」捷徑（不用先選取）</p>
+      <p class="note" style="margin:0">在 Safari 打開收錄全文的網頁 → 分享 → 整頁存到詩頁，詩頁會從整頁文字裡挑出詩的部分。</p>
+      <ol class="steps">
+        <li>在「捷徑」App 按「＋」，名稱取「整頁存到詩頁」。點「i」→ 打開「在分享表單中顯示」，接收類型只留「Safari 網頁」。</li>
+        <li>加入動作「取得 Safari 閱讀器文章」（英文介面叫 Get Article using Safari Reader，在搜尋欄打「閱讀器」就找得到），輸入選「捷徑輸入」。</li>
+        <li>加入動作「取得文章的詳細資訊」，選「內文」。</li>
+        <li>加入動作「URL 編碼」，再加入「打開 URL」，網址填：<code>${site}#/new?page=1&amp;text=</code>，最後面插入變數「URL 編碼文字」。</li>
+        <li>按「完成」。動作的名稱在不同 iOS 版本可能略有不同。</li>
       </ol>
     </div>`}
   </main>`;
@@ -1884,6 +1955,15 @@ document.addEventListener('click', e => {
     case 'scope-collection': DB.prefs.scope = 'collection'; save(); break;
     case 'ed-type': ED.type = b.dataset.v; document.querySelectorAll('#ed-type button').forEach(x => { x.classList.toggle('on', x.dataset.v === ED.type); x.setAttribute('aria-pressed', x.dataset.v === ED.type); }); edRefresh(); break;
     case 'ed-save': edSave(); break;
+    case 'dup-update': {
+      const old = poemById(b.dataset.id); if (!old || !ED) break;
+      const e = ED; closeModal();
+      old.text = e.text.replace(/\s+$/, ''); if (e.title.trim() && (!old.title || old.title === '無題')) old.title = e.title.trim();
+      if (!old.authorId && e.authorName.trim()) old.authorId = resolveAuthor(e.authorName, e.dynasty);
+      if (e.source && !old.source) old.source = e.source.trim(); if (e.note && !old.note) old.note = e.note.trim();
+      if (e.sourceImg && !old.sourceImg) old.sourceImg = e.sourceImg;
+      touch(old); save(); ED = null; go('#/read/' + old.id); toast('已更新原本那首'); break;
+    }
     case 'ed-del': { const id = ED.id; ED = null; trashPoems([id]); go('#/'); break; }
     case 'ed-rmillus': ED.illustration = null; { const keep = ED; $('#app').innerHTML = editorView(keep); ED = keep; edRefresh(); bindDrops(); } break;
     case 'ed-rmimg': ED.sourceImg = null; { const keep = ED; $('#app').innerHTML = editorView(keep); ED = keep; edRefresh(); bindDrops(); } break;

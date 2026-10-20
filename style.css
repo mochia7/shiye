@@ -479,3 +479,27 @@ body.printmode #toast{display:none}
   .chip{white-space:nowrap;flex:none}
   #toast{bottom:calc(150px + env(safe-area-inset-bottom));max-width:calc(100vw - 40px)}
 }
+
+/* ---------- v0.5 ---------- */
+.rec-seg{display:inline-grid}.rec-seg button{height:34px;padding:0 16px}
+.rec-card{padding:26px 28px;display:flex;flex-direction:column;gap:8px;background:linear-gradient(180deg,#FBF8F1,#fff)}
+.rec-kicker{font-size:12px;letter-spacing:.12em;color:var(--accent);font-weight:600}
+.rec-title{margin:2px 0 0;font-size:26px;letter-spacing:.06em}
+.rec-au{color:var(--ink3);font-size:14px}
+.rec-note{margin:6px 0 4px;line-height:1.9;font-size:15px;max-width:42em}
+.rec-text{font-size:17px;line-height:2.1;margin:8px 0;letter-spacing:.06em}
+.rec-acts{margin-top:6px;gap:8px}
+.hist-day{font-size:13px;font-weight:600;color:var(--ink3);margin:14px 0 4px;letter-spacing:.06em}
+.hist-day:first-child{margin-top:0}
+.hist-row{display:flex;align-items:center;gap:14px;padding:12px 4px;border-bottom:1px solid var(--line2);text-decoration:none;color:inherit}
+.hist-row:hover{background:#F7F3EB}
+.hist-time{font-variant-numeric:tabular-nums;font-weight:600;min-width:3.2em}
+.hist-diff{display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--line2)}
+.dup-prev{white-space:pre-line;background:#F7F3EB;border-radius:8px;padding:12px 16px;line-height:1.9;margin:12px 0;font-size:15px}
+.banner.row{gap:12px}
+@media (max-width:760px){
+  .rec-card{padding:20px}
+  .rec-title{font-size:22px}
+  .rec-acts .btn{flex:1 1 auto}
+  .hist-diff{flex-wrap:wrap}.hist-diff .btn{width:100%}
+}

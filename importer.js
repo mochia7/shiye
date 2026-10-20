@@ -295,7 +295,115 @@
     return 2 * inter / (Math.max(a.length - 1, 1) + Math.max(b.length - 1, 1));
   }
 
-  const api = { decodeBytes, parsePoemFile, fromFilename, splitTitleAuthor, normKey, similarity, guessType, parseDate, DYNASTIES: DYN };
+  // ---------- 聰明貼上：從網頁、截圖辨識、AI 摘要這類雜亂文字裡挑出詩 ----------
+  const UI_LINE = /^.?\s*(?:A[Il1] ?摘要|AI 概覽|詩作原文|原文|全文|詩文|作品背景(?:與|和)?解析|作品賞析|賞析|解析|注釋|註釋|問問 ?Gemini|新分頁|所有分頁|顯示(?:更多|全部)|收起|複製連結|分享|相關搜尋|更多結果|廣告|贊助|返回頂部|上一篇|下一篇|閱讀全文|回到首頁|首頁)[\s:：]*$/i;
+  const CJK = /[㐀-鿿豈-﫿]/g;
+  const cjkCount = s => (s.match(CJK) || []).length;
+  const isProse = para => {
+    const ls = para.filter(l => l.trim());
+    const len = ls.reduce((a, l) => a + l.trim().length, 0);
+    return ls.length && ls.length <= 4 && len > 30 && len / ls.length > 22 && /[。]/.test(ls.join(''));
+  };
+  function introInfo(s) {
+    const o = {};
+    const t = s.match(/[〈「『（(]([^〉」』)）》\n]{1,24})[〉」』)）》]/) || (!/詩集《/.test(s) && s.match(/《([^》\n]{1,24})》/));
+    if (t) o.title = t[1].trim();
+    const a = s.match(/(?:詩人|作家|作者|詩人兼\S{1,4})[\s　]*([一-鿿·．]{2,5}?)(?=於|在|的|所|創作|寫|發表|筆下|，|。|、|\s|（|\(|$)/);
+    if (a) o.author = a[1];
+    else { const b = s.match(/[〉」』)）》]\s*(?:是|為|乃)\s*(?:[^，。]{0,10}?(?:詩人|作家))?\s*([\u4e00-\u9fff]{2,4}?)\s*(?:的|所|於|在|早年|晚年|年輕時)/); if (b && !/^(台灣|臺灣|中國|香港|一首|現代|著名|知名)/.test(b[1])) o.author = b[1]; }
+    const c = s.match(/收錄(?:在|於|進)?(?:其|他的|她的)?(?:詩集|作品集)?\s*《([^》\n]{1,30})》/);
+    if (c) o.collection = c[1].trim();
+    return o;
+  }
+  function smartParse(raw, opt = {}) {
+    let text = String(raw || '').replace(/^﻿/, '').replace(/\r\n?/g, '\n').replace(/[​-‍⁠]/g, '').replace(/[ \t]*\u{1F517}/gu, '');
+    let lines = text.split('\n').map(l => l.replace(/[ \t]+$/, ''));
+    const nb = () => lines.map((l, i) => l.trim() ? i : -1).filter(i => i >= 0);
+    // 1. 介面雜訊：狀態列、網址、按鈕文字
+    lines = lines.map((l, i) => {
+      const s = l.trim();
+      if (!s) return l;
+      if (UI_LINE.test(s)) return '';
+      if (s.length <= 30 && /[a-z0-9-]+\.(?:com|tw|net|org|cc|io|hk|cn|me|app)\b/i.test(s) && cjkCount(s) <= 6) return '';
+      if (s.length <= 30 && /(?:Gemini|新分頁|所有分頁|分頁|書籤|閱讀器)/.test(s) && /(?:Gemini|分頁)/.test(s)) return '';
+      if (/^https?:\/\/\S+$/.test(s)) return '';
+      return l;
+    });
+    if (opt.ocr) {
+      // 只清最上面和最下面幾行：狀態列時間、電量、亂碼
+      const junk = s => /^\d{1,2}[:：]\d{2}/.test(s) || (s.length <= 18 && (s.replace(/[\s　]/g, '').match(/[A-Za-z0-9@+#&()|=<>\\/_~^*%$]/g) || []).length >= 2 && cjkCount(s) <= s.length * .6) || (s.replace(/\s/g, '').length <= 2 && !cjkCount(s)) || (s.replace(/[\s\u3000]/g, '').length <= 6 && /[@#+=<>|\\~^*%$&]/.test(s)) || (s.length <= 14 && /[@©®]/.test(s));
+      for (const edge of [0, 1]) {
+        for (let k = 0; k < 4; k++) {
+          const idx = nb(); if (!idx.length) break;
+          const i = edge ? idx[idx.length - 1] : idx[0];
+          if (junk(lines[i].trim())) lines[i] = ''; else break;
+        }
+      }
+      // 網頁上的連結圖示常被辨識成「2」
+      lines = lines.map(l => l.replace(/([\u3400-\u9fff，。！？])\s*2$/, '$1'));
+    }
+    // 2. 段落：開頭或結尾的介紹、說明文字（散文）移到附記
+    const paras = []; let cur = [];
+    lines.forEach(l => { if (l.trim()) cur.push(l); else if (cur.length) { paras.push(cur); cur = []; } });
+    if (cur.length) paras.push(cur);
+    const notes = []; let info = {};
+    if (opt.page && paras.length > 2) {
+      // 整個網頁：找出最長一段「短行」組成的區塊（詩），前後的文章、選單都丟掉
+      const avg = p => p.reduce((a, l) => a + l.trim().length, 0) / p.length;
+      const poemish = p => avg(p) <= 26 && !(p.length === 1 && p[0].trim().length <= 8 && /^(?:分享|留言|回覆|推薦|收藏|更多|標籤|分類|上一篇|下一篇)/.test(p[0].trim()));
+      let hint = -1;
+      if (opt.title) { const k = normKey(opt.title); hint = paras.findIndex(p => p.some(l => normKey(l) === k || (k.length >= 2 && normKey(l).startsWith(k) && l.trim().length <= k.length + 12))); }
+      let best = null;
+      for (let i = 0; i < paras.length; i++) {
+        if (!poemish(paras[i])) continue;
+        let j = i, lines = 0;
+        while (j < paras.length && poemish(paras[j])) { lines += paras[j].length; j++; }
+        const near = hint >= 0 && i >= hint && i <= hint + 2 ? 1000 : 0;
+        const multi = paras.slice(i, j).filter(p => p.length >= 2).length;
+        const sc = lines + multi * 3 + near;
+        if (!best || sc > best.sc) best = { i, j, sc };
+        i = j - 1;
+      }
+      if (best) {
+        const intro = paras.slice(0, best.i).filter(isProse).map(p => p.map(l => l.trim()).join(''));
+        intro.forEach(s => { info = Object.assign(introInfo(s), info); });
+        // 標題行在區塊前一段
+        if (hint >= 0 && hint < best.i) { const hl = paras[hint].find(l => normKey(l).startsWith(normKey(opt.title))); if (hl) info.title = info.title || opt.title; }
+        paras.splice(0, paras.length, ...paras.slice(best.i, best.j));
+        if (hint >= best.i && hint < best.j && paras[hint - best.i].length <= 2) {
+          const hp = paras[hint - best.i];
+          if (hp.length === 2 && cjkName2(hp[1])) info.author = info.author || hp[1].trim();
+          paras.splice(hint - best.i, 1); info.title = info.title || opt.title;
+        }
+      }
+    }
+    const introLine = p => p.length === 1 && p[0].trim().length >= 8 && /[〈「『（(《][^〉」』)）》]{1,24}[〉」』)）》]\s*(?:是|為|乃|，)/.test(p[0]) && /[。]$/.test(p[0].trim());
+    while (paras.length > 1 && (isProse(paras[0]) || introLine(paras[0]))) { const p = paras.shift().map(l => l.trim()).join(''); info = Object.assign(introInfo(p), info); notes.push(p); }
+    while (paras.length > 1 && isProse(paras[paras.length - 1])) notes.push(paras.pop().map(l => l.trim()).join(''));
+    // 只有一段時，第一行可能是介紹句
+    if (paras.length && paras[0].length > 1) {
+      const f = paras[0][0].trim();
+      if (f.length > 30 && /[。]/.test(f) && /[〈「《]/.test(f)) { info = Object.assign(introInfo(f), info); notes.unshift(f); paras[0].shift(); }
+    }
+    // 詩前面單獨的「標題／作者」行
+    let title = info.title || '', author = info.author || '';
+    if (paras.length > 1 && paras[0].length <= 2 && paras[0].every(l => l.trim().length <= 24)) {
+      const head = paras[0].map(l => l.trim());
+      const m0 = head[0].match(/^(.{1,20}?)[\s　]*[／/|｜][\s　]*([一-鿿·]{2,5})$/);
+      const am = head.map(h => h.match(/^(?:作者|文|詩)[\s　]*[:：／/][\s　]*(.{1,20})$/));
+      if (m0) { title = title || m0[1]; author = author || m0[2]; paras.shift(); }
+      else if (am[1] || (head.length === 2 && cjkName2(head[1]))) { title = title || head[0]; author = author || (am[1] ? am[1][1] : head[1]); paras.shift(); }
+      else if (head.length === 1 && (!title || normKey(head[0]) === normKey(title))) { title = title || head[0]; paras.shift(); }
+    }
+    let body = paras.map(p => p.join('\n')).join('\n\n');
+    body = dedent(body.split('\n')).join('\n');
+    // 「作者：」行
+    body = body.replace(/^[ \t　]*(?:作者|文)[ \t　]*[:：][ \t　]*(.{1,20})[ \t　]*$/m, (m, a) => { if (!author) author = a.trim(); return ''; }).replace(/\n{3,}/g, '\n\n').replace(/^\n+|\n+$/g, '');
+    return { title, authorName: author, text: body, note: notes.join('\n'), source: info.collection ? `《${info.collection}》` : '', found: !!(info.title || info.author) };
+  }
+  const cjkName2 = s => /^[一-鿿]{2,4}$/.test(s.trim());
+
+  const api = { decodeBytes, parsePoemFile, fromFilename, splitTitleAuthor, normKey, similarity, guessType, parseDate, smartParse, DYNASTIES: DYN };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.ShiImport = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

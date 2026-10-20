@@ -269,6 +269,7 @@
         if (!p.authorId && d.authorName) p.authorId = resolveAuthor(d.authorName, d.dynasty);
         p.type = d.type; p.layout = defLayout(d.type);
         p.tags = p.tags.filter(t => t !== '待辨識'); if (!p.tags.includes('待校對')) p.tags.push('待校對');
+        if (findDup(p.text, p.id) && !p.tags.includes('可能重複')) p.tags.push('可能重複');
         p.updated = Date.now();
       }
       if (todo.length) { save(true); render(); }
@@ -303,9 +304,26 @@
     else { try { localStorage.removeItem('shiye-sync-config'); localStorage.removeItem('shiye-sync-state'); } catch (e) {} }
     setStatus('off', '');
   }
+  // ---------- 時光機：GitHub 上每次同步都是一個版本 ----------
+  async function listVersions(page = 1) {
+    if (!CFG || !CFG.token) throw new SyncError('OFF', '還沒有連接同步');
+    const r = await fetch(`${api()}/repos/${encodeURIComponent(CFG.owner)}/${encodeURIComponent(CFG.repo)}/commits?path=data.json&per_page=60&page=${page}`, { headers: { Authorization: 'Bearer ' + CFG.token, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' }, cache: 'no-store' });
+    if (!r.ok) throw failFor(r);
+    const j = await r.json();
+    return (Array.isArray(j) ? j : []).map(c => ({ sha: c.sha, date: Date.parse((c.commit && (c.commit.committer || c.commit.author) || {}).date) || 0, message: (c.commit && c.commit.message) || '' }));
+  }
+  async function getVersion(sha) {
+    if (!CFG || !CFG.token) throw new SyncError('OFF', '還沒有連接同步');
+    const r = await fetch(`${api()}/repos/${encodeURIComponent(CFG.owner)}/${encodeURIComponent(CFG.repo)}/contents/data.json?ref=${encodeURIComponent(sha)}`, { headers: { Authorization: 'Bearer ' + CFG.token, Accept: 'application/vnd.github.raw+json', 'X-GitHub-Api-Version': '2022-11-28' }, cache: 'no-store' });
+    if (!r.ok) throw failFor(r);
+    const t = await r.text();
+    let j = JSON.parse(t);
+    if (j && j.encoding === 'base64' && j.content) j = JSON.parse(new TextDecoder().decode(bytesFromB64(j.content)));
+    return j;
+  }
   const info = () => ({ configured: !!(CFG && CFG.token), owner: CFG && CFG.owner, repo: CFG && CFG.repo, status, last: (STATE && STATE.last) || 0, device: DEVICE() });
   // 測試用：可以改成模擬的 GitHub 網址
   async function setApiForTest(url) { CFG = Object.assign(CFG || {}, { api: url }); }
 
-  window.ShiSync = { init, syncNow, afterSave, configure, disconnect, info, storeImage, resolveImg, hydrate, merge, setApiForTest };
+  window.ShiSync = { init, syncNow, afterSave, configure, disconnect, info, storeImage, resolveImg, hydrate, merge, setApiForTest, listVersions, getVersion };
 })();
