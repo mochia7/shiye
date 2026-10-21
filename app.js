@@ -1,5 +1,5 @@
 'use strict';
-/* 詩頁 v0.10 — 詩篇閱讀與排版 */
+/* 詩頁 v0.11 — 詩篇閱讀與排版 */
 
 // ---------- helpers ----------
 const $ = (s, r = document) => r.querySelector(s);
@@ -56,7 +56,7 @@ function sourceGroups() {
   live().forEach(p => { const k = srcKey(p.source); if (k) m.set(k, (m.get(k) || 0) + 1); });
   return [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'zh-Hant'));
 }
-const VERSION = '0.10.0';
+const VERSION = '0.11.0';
 const PRINT = /^#\/print/.test(location.hash);
 const fontKey = (L, st) => L.font || (DB && DB.prefs && DB.prefs.defaultFont) || st.font;
 const live = () => DB.poems.filter(p => !p.deleted);
@@ -103,6 +103,7 @@ function splitAuthor(s) {
 async function migrate() {
   DB.collections = DB.collections || [];
   DB.authors = DB.authors || [];
+  DB.notes = DB.notes || [];
   DB.prefs = Object.assign({ scope: 'author', last: null, defaultFont: 'kai' }, DB.prefs || {});
   if ((DB.version || 1) < 2) {
     if (serverMode) { try { await fetch('api/backup?tag=v0.1', { method: 'POST' }); } catch (e) {} }
@@ -616,6 +617,10 @@ function render() {
   else if (r.view === 'cols') { app.innerHTML = colsView(); }
   else if (r.view === 'search') { app.innerHTML = searchView(); const q = $('#q'); if (q && !HF.q) setTimeout(() => q.focus(), 50); }
   else if (r.view === 'favs') { app.innerHTML = ShiR.libView(r.q.get('tab')); }
+  else if (r.view === 'yg') { app.innerHTML = ShiY.ygView(r.q.get('tab')); }
+  else if (r.view === 'write') { app.innerHTML = ShiY.writeView(r.id); ShiY.wStats(); const ta = $('#w-text'); if (ta && !isMobile()) setTimeout(() => (($('#w-title') || {}).value ? ta : $('#w-title')).focus(), 30); }
+  else if (r.view === 'ver' && poemById(r.id)) { app.innerHTML = ShiY.verView(r.id, r.q.get('v')); }
+  else if (r.view === 'ygimp') { const h = ShiY.ygImpView(); if (!h) { location.replace('#/yg'); return; } app.innerHTML = h; }
   else if (r.view === 'memo' && poemById(r.id)) { app.innerHTML = ShiR.memoView(poemById(r.id)); }
   else if (r.view === 'today') { const tp = ShiR.todayPoem(); location.replace(tp ? '#/read/' + tp.id : '#/'); return; }
   else if (r.view === 'import' && IMP) { app.innerHTML = importView(); }
@@ -626,7 +631,7 @@ function render() {
     app.innerHTML = homeView();
     if (r.q.get('src') !== null) requestAnimationFrame(() => { const g = $('#grid'); if (g) g.closest('section').scrollIntoView({ block: 'start' }); });
   }
-  bindDrops();
+  bindDrops(); document.dispatchEvent(new Event('shiye-render'));
   selBar();
   mobileChrome(r);
 }
@@ -667,6 +672,7 @@ const HF = { type: 'all', col: 'all', author: 'all', dyn: 'all', src: 'all', q: 
 function filtered() {
   const q = HF.q.trim().toLowerCase();
   return live().filter(p => {
+    if (ShiY.isDraft(p)) return false;   // 「有感」的草稿只在有感裡
     const a = authorOf(p);
     return (HF.type === 'all' || (HF.type === 'fav' ? p.fav : p.type === HF.type))
       && (HF.col === 'all' || (HF.col === 'none' ? !p.collectionId : p.collectionId === HF.col))
@@ -732,6 +738,7 @@ function homeView() {
   return topbar(`
     <div class="row">
       <label for="q" class="sr">搜尋詩篇</label>
+      ${ShiY.navBtns('home')}
       <input id="q" class="search" data-in="q" placeholder="搜尋詩人、詩題、詩句" value="${esc(HF.q)}">
       <a class="btn dark" href="#/new">${IC.up}新增詩篇</a>
     </div>`) + `
@@ -1030,6 +1037,7 @@ function edSave() {
     p = poemById(e.id);
     const typeChanged = p.type !== data.type;
     Object.assign(p, data, { updated: Date.now() });
+    if (p.mine) ShiY.pushVersion(p, true);
     if (typeChanged) p.layout = Object.assign(p.layout, { style: defStyle(data.type) });
   } else { p = newPoem(data, data.collectionId); p.tags = tags; DB.poems.push(p); }
   save(); ED = null; go('#/read/' + p.id); toast('已儲存');
@@ -1105,6 +1113,7 @@ function readerView(p) {
       <span class="muted" id="stylename">· ${st.name}</span>
     </div>
     <div class="row d-only">
+      ${p.mine ? `<a class="btn" href="#/write/${p.id}">寫作模式</a><a class="btn" href="#/ver/${p.id}">修改紀錄</a>` : ''}
       <button type="button" class="btn" data-act="focus-toggle" title="只留下詩（F 鍵）">專注閱讀</button>
       <button type="button" class="btn" data-act="tts-start">聽這首詩</button>
       <a class="btn" href="#/memo/${p.id}">背誦</a>
@@ -1192,6 +1201,7 @@ function controlsInner(p, L) {
 function readerUpdate(p, full = true) {
   const L = layoutOf(p);
   const stg = $('#stage'); if (stg) stg.innerHTML = stageHTML(p, L);
+  document.dispatchEvent(new Event('shiye-render'));
   if (full) { const c = $('#controls'); if (c) { const sc = c.scrollTop; c.innerHTML = controlsHTML(p, L); c.scrollTop = sc; } }
   const sn = $('#stylename'); if (sn) sn.textContent = '· ' + STYLES[L.style].name;
   document.querySelectorAll('.mbar [data-k=style]').forEach(b => { const on = b.dataset.v === L.style; b.classList.toggle('on', on); b.setAttribute('aria-pressed', on); });
@@ -1918,22 +1928,23 @@ function syncView() {
 
 // ---------- 手機：分頁列與簡化畫面 ----------
 const isMobile = () => window.matchMedia('(max-width: 760px)').matches;
-const TAB_VIEWS = { home: '#/', authors: '#/authors', cols: '#/cols', search: '#/search', favs: '#/favs' };
+const TAB_VIEWS = { home: '#/', authors: '#/authors', yg: '#/yg', search: '#/search', favs: '#/favs' };
 function mobileChrome(r) {
   document.body.classList.toggle('m-read', r.view === 'read');
   document.body.classList.remove('sheet-open', 'chrome-off');
   let bar = $('#tabbar');
-  const show = isMobile() && ['home', 'authors', 'cols', 'search', 'favs', 'author', 'col', 'trash', 'sync'].includes(r.view);
+  const show = isMobile() && ['home', 'authors', 'cols', 'search', 'favs', 'author', 'col', 'trash', 'sync', 'yg', 'ver'].includes(r.view);
   if (!show) { if (bar) bar.remove(); const f = $('#fab'); if (f) f.remove(); document.body.classList.remove('has-tabbar'); return; }
   document.body.classList.add('has-tabbar');
-  const cur = r.view === 'author' ? 'authors' : r.view === 'col' ? 'cols' : r.view;
-  const tabs = [['home', '首頁', '詩'], ['authors', '作者', '人'], ['cols', '詩集', '冊'], ['search', '搜尋', '尋'], ['favs', '書房', '☆']];
+  const cur = r.view === 'author' ? 'authors' : r.view === 'col' || r.view === 'cols' ? 'favs' : r.view === 'ver' ? 'yg' : r.view;
+  const tabs = [['home', '首頁', '詩'], ['authors', '作者', '人'], ['yg', '有感', '感'], ['search', '搜尋', '尋'], ['favs', '書房', '☆']];
   if (!bar) { bar = document.createElement('nav'); bar.id = 'tabbar'; bar.className = 'tabbar'; bar.setAttribute('aria-label', '主要分頁'); document.body.appendChild(bar); }
   bar.innerHTML = tabs.map(([k, n, g]) => `<a href="${TAB_VIEWS[k]}" class="${cur === k ? 'on' : ''}"${cur === k ? ' aria-current="page"' : ''}><span class="tg" aria-hidden="true">${g}</span>${n}</a>`).join('');
   let fab = $('#fab');
-  if (r.view === 'home' || r.view === 'col' || r.view === 'author') {
+  if (r.view === 'home' || r.view === 'col' || r.view === 'author' || r.view === 'yg') {
     if (!fab) { fab = document.createElement('a'); fab.id = 'fab'; fab.className = 'fab'; fab.setAttribute('aria-label', '新增詩篇'); fab.innerHTML = '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>'; document.body.appendChild(fab); }
-    fab.href = r.view === 'col' ? `#/new?col=${r.id}` : r.view === 'author' && r.id !== 'none' ? `#/new?author=${r.id}` : '#/new';
+    fab.href = r.view === 'yg' ? '#/write/new' : r.view === 'col' ? `#/new?col=${r.id}` : r.view === 'author' && r.id !== 'none' ? `#/new?author=${r.id}` : '#/new';
+    fab.classList.toggle('fab-yg', r.view === 'yg'); fab.innerHTML = r.view === 'yg' ? '<span style="font-family:var(--kai);font-size:21px">寫</span>' : '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>';
   } else if (fab) fab.remove();
 }
 window.addEventListener('resize', () => mobileChrome(route()));

@@ -130,7 +130,7 @@
   const stable = v => Array.isArray(v) ? '[' + v.map(stable).join(',') + ']'
     : v && typeof v === 'object' ? '{' + Object.keys(v).filter(k => v[k] !== undefined).sort().map(k => JSON.stringify(k) + ':' + stable(v[k])).join(',') + '}'
     : JSON.stringify(v === undefined ? null : v);
-  const LISTS = ['poems', 'authors', 'collections'];
+  const LISTS = ['poems', 'authors', 'collections', 'notes'];
   // 一定要複製：上次同步的版本不能和正在用的資料共用同一份物件，不然本機改動會「看不見」
   const mergedJSON = o => JSON.stringify(o);
   function payload(db) { const o = { version: db.version }; LISTS.forEach(k => { o[k] = (db[k] || []).map(x => x); }); return o; }
@@ -155,7 +155,8 @@
   function merge(base, local, remote) {
     const stats = { pulled: 0, pushed: 0, conflicts: 0 };
     const out = { version: Math.max(local.version || 0, remote.version || 0) };
-    LISTS.forEach(k => { out[k] = mergeList(base && base[k], local[k], remote[k], stats); });
+    // 舊版詩頁不認得的清單（例如「有感」的靈感筆記）：舊版上傳時會少掉，當作沒有變動，不要刪掉
+    LISTS.forEach(k => { const r = remote[k] === undefined ? (base && base[k]) : remote[k]; out[k] = mergeList(base && base[k], local[k], r, stats); });
     return { merged: out, stats };
   }
 
@@ -247,7 +248,7 @@
     save(true);
     // 正在編輯時不要打斷；其他畫面重新整理
     const v = route().view;
-    if (v !== 'edit' && v !== 'new' && v !== 'import' && !$('#modal')) render();
+    if (v !== 'edit' && v !== 'new' && v !== 'import' && v !== 'write' && v !== 'ygimp' && !$('#modal')) render();
   }
   // 存檔後幾秒內同步一次（避免每打一個字就同步）
   function afterSave() {

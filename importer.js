@@ -403,7 +403,7 @@
   }
   const cjkName2 = s => /^[一-鿿]{2,4}$/.test(s.trim());
 
-  const api = { decodeBytes, parsePoemFile, fromFilename, splitTitleAuthor, normKey, similarity, guessType, parseDate, smartParse, DYNASTIES: DYN };
+  const api = { decodeBytes, parsePoemFile, fromFilename, splitTitleAuthor, normKey, similarity, guessType, parseDate, smartParse, collapseSpacing, capBlankRuns, trimBlank, dedent, DYNASTIES: DYN };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.ShiImport = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

@@ -154,7 +154,7 @@
 
   // ---------- 今日一詩 ----------
   function todayPoem() {
-    const ps = live(); if (!ps.length) return null;
+    const ps = live().filter(p => !ShiY.isDraft(p) && (!p.mine || ShiY.todayOK())); if (!ps.length) return null;
     const day = Math.floor((Date.now() - new Date(new Date().getFullYear(), 0, 0)) / 864e5);
     const sorted = [...ps].sort(byCreated);
     return sorted[day % sorted.length];
@@ -208,7 +208,7 @@
 
   // ---------- 我的書房：收藏、劃線、背過的詩 ----------
   function libTabs(cur) {
-    return `<div class="seg libtabs" role="tablist">${[['favs', '收藏的詩'], ['marks', '劃線與筆記'], ['memo', '背過的詩']].map(([k, n]) => `<a role="tab" href="#/favs?tab=${k}" class="${cur === k ? 'on' : ''}" aria-selected="${cur === k}">${n}</a>`).join('')}</div>`;
+    return `<div class="seg libtabs" role="tablist">${[['favs', '收藏的詩'], ['cols', '詩集'], ['marks', '劃線與筆記'], ['memo', '背過的詩']].map(([k, n]) => `<a role="tab" href="#/favs?tab=${k}" class="${cur === k ? 'on' : ''}" aria-selected="${cur === k}">${n}</a>`).join('')}</div>`;
   }
   function marksHTML() {
     const ps = live().filter(p => (p.marks || []).length).sort((a, b) => Math.max(...b.marks.map(m => m.at || 0)) - Math.max(...a.marks.map(m => m.at || 0)));
@@ -222,11 +222,11 @@
     return `<div class="card panel" style="gap:0">${ps.map(p => `<a class="hist-row" href="#/memo/${p.id}"><span class="serif" style="font-weight:700;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">〈${esc(p.title)}〉</span><span class="muted">${esc(authorLabel(authorOf(p)))}</span><span class="muted" style="margin-left:auto;white-space:nowrap">${p.memo.n} 次・${new Date(p.memo.last).toLocaleDateString('zh-TW')}</span></a>`).join('')}</div>`;
   }
   function libView(tab) {
-    tab = ['marks', 'memo'].includes(tab) ? tab : 'favs';
+    tab = ['marks', 'memo', 'cols'].includes(tab) ? tab : 'favs';
     const ps = live().filter(p => p.fav).sort((a, b) => byCreated(b, a));
-    const body = tab === 'marks' ? marksHTML() : tab === 'memo' ? memoListHTML()
+    const body = tab === 'marks' ? marksHTML() : tab === 'memo' ? memoListHTML() : tab === 'cols' ? `<div class="shelf m-shelf">${DB.collections.map(c => `<a class="book" href="#/col/${c.id}">${coverHTML(c, 'sm')}<span style="font-size:13px">${esc(c.name)}</span><span class="muted" style="margin-top:-6px">${live().filter(p => p.collectionId === c.id).length} 首</span></a>`).join('')}<div class="book"><button type="button" class="book-add" data-act="newcol">＋ 新增詩集</button></div></div>`
       : `<div class="grid">${ps.length ? ps.map(cardHTML).join('') : '<div class="empty" style="grid-column:1/-1">閱讀時按標題旁的星號，就會收在這裡</div>'}</div>`;
-    return topbar(isMobile() ? '' : '<a class="btn" href="#/">回首頁</a>') + `<main class="page" style="gap:18px"><h1 class="sec" style="font-size:30px">我的書房</h1>${libTabs(tab)}${body}</main>`;
+    return topbar(ShiY.navBtns('favs')) + `<main class="page" style="gap:18px"><h1 class="sec" style="font-size:30px">我的書房</h1>${libTabs(tab)}${body}</main>`;
   }
 
   // ---------- 事件 ----------
@@ -298,5 +298,41 @@
   // 拖曳結束時不要觸發點擊（例如點到劃線）
   document.addEventListener('click', e => { const a = e.target.closest && e.target.closest('.art.vdir'); if (a && a.dataset.panned === '1') { e.stopPropagation(); e.preventDefault(); } }, true);
 
-  window.ShiR = { speakPoem, stopTTS: stop, todayPoem, maybeAutoToday, todayAuto, memoView, libView, hideSelbar };
+  // ---------- 專注閱讀＋直排：置中、依畫面高度放大字 ----------
+  const bigOn = () => LS.get('shiye-focus-big', true);
+  function fitFocus() {
+    document.querySelectorAll('.fbig').forEach(x => x.remove());
+    const a = document.querySelector('#stage .art.vdir'), p = curPoem();
+    const reset = () => { if (a) { const vb = a.querySelector('.vbody'), h1 = a.querySelector('h1'); if (vb) { vb.style.fontSize = ''; vb.style.lineHeight = ''; } if (h1) h1.style.fontSize = ''; } };
+    if (!a || !p || !document.body.classList.contains('focus') || isMobile()) { reset(); return; }
+    // 右上角的切換鈕
+    const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'fbig'; btn.dataset.act = 'focus-big';
+    btn.textContent = bigOn() ? '原始字級' : '放大'; btn.title = bigOn() ? '改回排版欄設定的字級' : '依畫面大小放大字';
+    document.body.appendChild(btn);
+    reset();
+    if (!bigOn()) return;
+    const L = layoutOf(p), vb = a.querySelector('.vbody'), h1 = a.querySelector('h1'); if (!vb) return;
+    const sts = stanzas(p.text), lhK = (LH[L.lh] || LH.mid)[1];
+    const n = Math.max(1, ...sts.flatMap(s => s.lines.map(l => [...l.text].length + (L.keep ? Math.round(l.ind) : 0))));
+    const cs = getComputedStyle(a), H = a.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+    const W = a.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+    const ls = (parseFloat(getComputedStyle(vb).letterSpacing) || 0) / (parseFloat(getComputedStyle(vb).fontSize) || 16);
+    const cols = sts.reduce((x, s) => x + s.lines.length, 0) + (sts.length - 1) * (GAP[L.gap] || GAP.mid)[1];
+    let fs = Math.floor(H * .68 / n / (1 + ls));
+    const wFit = Math.floor(W * .82 / (cols * lhK + 3.2));           // 整首放得下一個畫面時，字的上限
+    const short = fs * (cols * lhK + 3.2) <= W * .82 || wFit >= 30;
+    fs = short ? Math.min(fs, wFit, 64) : Math.min(fs, 40);
+    fs = Math.max(fs, L.size);                                          // 不要比自己設定的還小
+    vb.style.fontSize = fs + 'px'; vb.style.lineHeight = Math.round(fs * lhK) + 'px';
+    if (h1) h1.style.fontSize = Math.round(fs * 1.25 + 8) + 'px';
+  }
+  let fitT = null;
+  const fitSoon = () => { clearTimeout(fitT); fitT = setTimeout(fitFocus, 30); };
+  new MutationObserver(ms => { if (ms.some(m => m.attributeName === 'class')) fitSoon(); }).observe(document.body, { attributes: true, attributeFilter: ['class'] });
+  new MutationObserver(fitSoon).observe(document.documentElement, { childList: true, subtree: false });
+  document.addEventListener('shiye-render', fitSoon);
+  window.addEventListener('resize', fitSoon);
+  document.addEventListener('click', e => { const b = e.target.closest && e.target.closest('[data-act=focus-big]'); if (b) { LS.set('shiye-focus-big', !bigOn()); fitFocus(); } });
+
+  window.ShiR = { fitFocus, speakPoem, stopTTS: stop, todayPoem, maybeAutoToday, todayAuto, memoView, libView, hideSelbar };
 })();
