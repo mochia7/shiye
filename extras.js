@@ -18,7 +18,8 @@
     const R = window.SHI_RECS || { modern: [], poets: [], classic: [] };
     POOL = {
       modern: [...R.modern.map(x => Object.assign({ kind: 'modern' }, x)), ...R.poets.map(x => Object.assign({ kind: 'poet' }, x))],
-      classic: R.classic.map(x => Object.assign({ kind: 'classic' }, x))
+      classic: R.classic.map(x => Object.assign({ kind: 'classic' }, x)),
+      world: [...(R.world || []).map(x => Object.assign({ kind: 'world' }, x)), ...(R.worldMeta || []).map(x => Object.assign({ kind: 'wmeta' }, x))]
     };
     return POOL;
   }
@@ -32,8 +33,8 @@
     const favNames = new Set(live().filter(p => p.fav).map(p => { const a = authorOf(p); return a ? a.name : ''; }).filter(Boolean));
     const libNames = new Set(live().map(p => { const a = authorOf(p); return a ? a.name : ''; }).filter(Boolean));
     const gScore = {};
-    list.forEach(x => { if (favNames.has(x.a)) gScore[x.g || x.d] = (gScore[x.g || x.d] || 0) + 2; else if (libNames.has(x.a)) gScore[x.g || x.d] = (gScore[x.g || x.d] || 0) + 1; });
-    return list.map(x => 1 + Math.min(gScore[x.g || x.d] || 0, 6) * .5 + (favNames.has(x.a) ? 1.5 : libNames.has(x.a) ? .8 : 0));
+    list.forEach(x => { if (favNames.has(x.a)) gScore[x.g || x.d || x.c] = (gScore[x.g || x.d || x.c] || 0) + 2; else if (libNames.has(x.a)) gScore[x.g || x.d || x.c] = (gScore[x.g || x.d || x.c] || 0) + 1; });
+    return list.map(x => 1 + Math.min(gScore[x.g || x.d || x.c] || 0, 6) * .5 + (favNames.has(x.a) ? 1.5 : libNames.has(x.a) ? .8 : 0));
   }
   function pick(mode) {
     const st = ls.get(); const hidden = new Set(st.hidden || []);
@@ -48,12 +49,12 @@
   }
   function recMode() { return ls.get().mode || 'modern'; }
   function searchURL(r) {
-    const q = r.kind === 'poet' ? `${r.a} 詩` : `${r.t} ${r.a} 詩`;
+    const q = r.kind === 'poet' ? `${r.a} 詩` : r.kind === 'wmeta' ? `${r.ot} ${r.oa}` : `${r.t} ${r.a} 詩`;
     return 'https://www.google.com/search?q=' + encodeURIComponent(q);
   }
   function recCardHTML() {
     const mode = recMode(), r = pick(mode);
-    const seg = `<div class="seg rec-seg" role="group" aria-label="推薦類型">${[['modern', '新詩'], ['classic', '古典']].map(([k, n]) => `<button type="button" data-act="rec-mode" data-v="${k}" class="${mode === k ? 'on' : ''}" aria-pressed="${mode === k}">${n}</button>`).join('')}</div>`;
+    const seg = `<div class="seg rec-seg" role="group" aria-label="推薦類型">${[['modern', '新詩'], ['classic', '古典'], ['world', '世界']].map(([k, n]) => `<button type="button" data-act="rec-mode" data-v="${k}" class="${mode === k ? 'on' : ''}" aria-pressed="${mode === k}">${n}</button>`).join('')}</div>`;
     let body;
     if (!r) body = `<p class="muted" style="margin:0">這一類的推薦你都讀過或存過了。</p>`;
     else if (r.kind === 'classic') {
@@ -62,6 +63,24 @@
         <h3 class="rec-title serif">${esc(r.t)}</h3><div class="rec-au">${esc(r.d)} · ${esc(r.a)}</div>
         <div class="rec-text serif">${lines.slice(0, 8).map(esc).join('<br>')}${lines.length > 8 ? '<br>…' : ''}</div>
         <div class="row rec-acts"><button type="button" class="btn red sq" data-act="rec-save">存進詩庫</button><button type="button" class="btn sq" data-act="rec-next">換一首</button><button type="button" class="btn ghost sq" data-act="rec-hide">不感興趣</button></div>`;
+    } else if (r.kind === 'world') {
+      const xs = r.x.split('\n').filter(l => l.trim()), ts = r.tr.split('\n').filter(l => l.trim());
+      const n = Math.min(4, xs.length), more = xs.length > 4;
+      const same = r.t === r.ot;
+      body = `<div class="rec-kicker">世界經典 · ${esc(r.c)}${r.y ? ' · ' + r.y : ''}</div>
+        <h3 class="rec-title serif">〈${esc(r.t)}〉</h3>${same ? '' : `<div class="rec-ot">${esc(r.ot)}</div>`}
+        <div class="rec-au">${esc(r.a)}（${esc(r.oa)}）${r.src ? ' · ' + esc(r.src) : ''}</div>
+        <div class="rec-bi"><div class="rec-text orig">${xs.slice(0, n).map(esc).join('<br>')}${more ? '<br>…' : ''}</div><div class="rec-text serif">${ts.slice(0, Math.max(n, r.c === '日本' ? ts.length : n)).map(esc).join('<br>')}${more ? '<br>…' : ''}</div></div>
+        <p class="rec-note">${esc(r.n)}</p>
+        <div class="row rec-acts"><button type="button" class="btn red sq" data-act="rec-save">存進詩庫</button><button type="button" class="btn sq" data-act="rec-next">換一首</button><button type="button" class="btn ghost sq" data-act="rec-hide">不感興趣</button></div>
+        <p class="note" style="margin:0">原文已經沒有著作權；中文為詩頁譯。存進詩庫後原文和譯文會並排顯示。</p>`;
+    } else if (r.kind === 'wmeta') {
+      body = `<div class="rec-kicker">世界現代詩 · ${esc(r.c)}</div>
+        <h3 class="rec-title serif">〈${esc(r.t)}〉</h3><div class="rec-ot">${esc(r.ot)}</div>
+        <div class="rec-au">${esc(r.a)}（${esc(r.oa)}）${r.src ? ' · 收錄於' + esc(r.src) : ''}</div>
+        <p class="rec-note">${esc(r.n)}</p>
+        <div class="row rec-acts"><a class="btn red sq" href="${esc(searchURL(r))}" target="_blank" rel="noopener" data-act="rec-search">搜尋全文與翻譯</a><button type="button" class="btn sq" data-act="rec-save">存進詩庫</button><button type="button" class="btn sq" data-act="rec-next">換一首</button><button type="button" class="btn ghost sq" data-act="rec-hide">不感興趣</button></div>
+        <p class="note" style="margin:0">這首還有著作權，這裡只放導讀。找到原文或譯文後，可以貼進「內文」和「對照譯文」。</p>`;
     } else if (r.kind === 'poet') {
       body = `<div class="rec-kicker">推薦詩人 · ${esc(GROUP[r.g] || '')}</div>
         <h3 class="rec-title serif">${esc(r.a)}</h3>${r.book ? `<div class="rec-au">可以從詩集${esc(r.book)}讀起</div>` : ''}
@@ -84,6 +103,13 @@
     return { title: p.t, author: p.a, src: p.src };
   }
   function clearRec() { const st = ls.get(); delete st.pending; ls.set(st); }
+  function saveWorld(r) {
+    const note = `${r.ot !== r.t ? '原題：' + r.ot + '\n' : ''}${r.oa}（${r.c}${r.y ? '，' + r.y : ''}）${r.src ? '　' + r.src : ''}\n中文：詩頁譯\n${r.n}`;
+    const d = { title: r.t, authorName: r.a, dynasty: r.c, text: r.x, trans: r.tr, type: 'modern', source: '世界經典', note, tags: [] };
+    const p = newPoem(d, null); DB.poems.push(p);
+    const au = authorOf(p); if (au && !au.bio) au.bio = r.oa;
+    save(); toast(`已把〈${r.t}〉存進詩庫`); go('#/read/' + p.id);
+  }
   function saveClassic(r) {
     const d = { title: r.t, authorName: r.a, dynasty: r.d, text: r.x, type: 'classic', source: r.s, tags: [] };
     const p = newPoem(d, null); DB.poems.push(p); save();
@@ -338,8 +364,9 @@
       case 'rec-save': {
         const r = pick(recMode()); if (!r) break;
         if (r.kind === 'classic') { saveClassic(r); break; }
+        if (r.kind === 'world') { saveWorld(r); break; }
         setPending(r);
-        PENDING = { title: r.t, authorName: r.a, dynasty: '', text: '', type: 'modern', source: r.src || '', tags: [], fromRec: { title: r.t, author: r.a, src: r.src || '' } };
+        PENDING = { title: r.t, authorName: r.a, dynasty: r.kind === 'wmeta' ? r.c : '', text: '', type: 'modern', source: r.src || '', note: r.kind === 'wmeta' ? `原題：${r.ot}\n${r.oa}（${r.c}）` : '', tags: [], fromRec: { title: r.t, author: r.a, src: r.src || '' } };
         go('#/new'); break;
       }
       case 'x-paste': smartPaste(); break;

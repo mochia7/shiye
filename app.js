@@ -1,5 +1,5 @@
 'use strict';
-/* 詩頁 v0.7 — 詩篇閱讀與排版 */
+/* 詩頁 v0.8 — 詩篇閱讀與排版 */
 
 // ---------- helpers ----------
 const $ = (s, r = document) => r.querySelector(s);
@@ -56,7 +56,7 @@ function sourceGroups() {
   live().forEach(p => { const k = srcKey(p.source); if (k) m.set(k, (m.get(k) || 0) + 1); });
   return [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'zh-Hant'));
 }
-const VERSION = '0.7.0';
+const VERSION = '0.8.0';
 const PRINT = /^#\/print/.test(location.hash);
 const fontKey = (L, st) => L.font || (DB && DB.prefs && DB.prefs.defaultFont) || st.font;
 const live = () => DB.poems.filter(p => !p.deleted);
