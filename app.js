@@ -1,5 +1,5 @@
 'use strict';
-/* 詩頁 v0.8 — 詩篇閱讀與排版 */
+/* 詩頁 v0.9 — 詩篇閱讀與排版 */
 
 // ---------- helpers ----------
 const $ = (s, r = document) => r.querySelector(s);
@@ -56,7 +56,7 @@ function sourceGroups() {
   live().forEach(p => { const k = srcKey(p.source); if (k) m.set(k, (m.get(k) || 0) + 1); });
   return [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'zh-Hant'));
 }
-const VERSION = '0.8.0';
+const VERSION = '0.9.0';
 const PRINT = /^#\/print/.test(location.hash);
 const fontKey = (L, st) => L.font || (DB && DB.prefs && DB.prefs.defaultFont) || st.font;
 const live = () => DB.poems.filter(p => !p.deleted);
@@ -787,7 +787,7 @@ function homeView() {
     </section>
 
     <footer class="row" style="justify-content:space-between;border-top:1px solid var(--line);padding-top:20px">
-      <span class="muted">${serverMode ? '資料存在這台電腦上' : '目前以瀏覽器模式執行，資料存在此瀏覽器'} · 詩頁 v${VERSION}</span>
+      <span class="muted">${serverMode ? '資料存在這台電腦上' : '資料存在這支手機上'} · 詩頁 v${VERSION}${serverMode ? '' : ' · <button type="button" class="linkbtn" data-act="app-check">檢查更新</button>'}</span>
       <div class="row">
         <span class="muted">預設字體</span>
         <div class="seg" style="display:inline-grid">${Object.entries(FONTS).map(([k, v]) => `<button type="button" data-act="set-font" data-v="${k}" class="${DB.prefs.defaultFont === k ? 'on' : ''}" aria-pressed="${DB.prefs.defaultFont === k}" style="height:36px;padding:0 14px">${v[0]}</button>`).join('')}</div>
@@ -2136,9 +2136,41 @@ function mobileMore(p) {
 }
 
 // ---------- 離線使用 ----------
+// 手機版自動更新：有新版本時在上方提示，點一下就換成新版
 function registerSW() {
-  if (serverMode || !('serviceWorker' in navigator) || location.protocol !== 'https:') return;
-  navigator.serviceWorker.register('sw.js').catch(() => {});
+  if (serverMode || !('serviceWorker' in navigator) || (location.protocol !== 'https:' && !/^(localhost|127\.0\.0\.1)$/.test(location.hostname))) return;
+  const sw = navigator.serviceWorker;
+  let had = !!sw.controller;
+  sw.addEventListener('controllerchange', () => { if (had) showUpdateBar(); had = true; });
+  sw.register('sw.js').then(reg => {
+    window.__swReg = reg;
+    const check = () => reg.update().catch(() => {});
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') check(); });
+    window.addEventListener('online', check);
+    setInterval(check, 30 * 60e3);
+  }).catch(() => {});
+  // 剛更新完：告訴使用者現在是哪一版
+  try {
+    const prev = localStorage.getItem('shiye-ver');
+    if (prev && prev !== VERSION) setTimeout(() => toast(`已更新到詩頁 v${VERSION}`, 4000), 900);
+    localStorage.setItem('shiye-ver', VERSION);
+  } catch (e) {}
+}
+function showUpdateBar() {
+  if ($('#updbar')) return;
+  const d = document.createElement('div'); d.id = 'updbar'; d.className = 'updbar'; d.setAttribute('role', 'status');
+  d.innerHTML = '<span>詩頁有新版本</span><button type="button" class="btn red sq" data-act="app-update">立即更新</button><button type="button" class="btn ghost sq" data-act="app-later">稍後</button>';
+  document.body.appendChild(d);
+}
+async function checkUpdate() {
+  const reg = window.__swReg;
+  if (!reg) { toast(serverMode ? '電腦版請執行新的安裝程式來更新' : '這個瀏覽器不能自動更新，請重新整理'); return; }
+  toast('檢查中…', 8000);
+  let found = false;
+  const onCh = () => { found = true; };
+  navigator.serviceWorker.addEventListener('controllerchange', onCh, { once: true });
+  try { await reg.update(); } catch (e) { toast('沒有網路，連上後再試'); return; }
+  setTimeout(() => { if (!found && !reg.installing && !reg.waiting) toast(`已經是最新版（v${VERSION}）`); }, 3500);
 }
 
 // ---------- events ----------
@@ -2155,6 +2187,9 @@ document.addEventListener('click', e => {
   const au = r.view === 'author' ? authorById(r.id) : null;
   switch (a) {
     case 'modal-cancel': closeModal(); break;
+    case 'app-update': flushSave(); setTimeout(() => location.reload(), 150); break;
+    case 'app-later': { const u = $('#updbar'); if (u) u.remove(); toast('下次打開詩頁時會自動換成新版'); break; }
+    case 'app-check': checkUpdate(); break;
     case 'sync-now': ShiSync.syncNow('button'); break;
     case 'sync-connect': {
       const o = $('#sy-owner').value, rp = $('#sy-repo').value, tk = $('#sy-token').value, m = $('#sy-msg');
