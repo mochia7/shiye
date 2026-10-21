@@ -1,5 +1,5 @@
 // 詩頁離線快取：程式本身先用快取（沒網路也能開），背景再更新；GitHub 同步的請求不快取
-const CACHE = 'shiye-v0.9.0';
+const CACHE = 'shiye-v0.10.0';
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'importer.js', 'sync.js', 'extras.js', 'extras2.js', 'recs.js', 'icon.svg', 'icon.png', 'apple-touch-icon.png', 'icon-192.png', 'manifest.webmanifest'];
 // 安裝新版時一定從網路抓最新的檔案（不要用瀏覽器暫存的舊檔）
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL.map(u => new Request(u, { cache: 'reload' })))).then(() => self.skipWaiting())); });

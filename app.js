@@ -1,5 +1,5 @@
 'use strict';
-/* 詩頁 v0.9 — 詩篇閱讀與排版 */
+/* 詩頁 v0.10 — 詩篇閱讀與排版 */
 
 // ---------- helpers ----------
 const $ = (s, r = document) => r.querySelector(s);
@@ -56,7 +56,7 @@ function sourceGroups() {
   live().forEach(p => { const k = srcKey(p.source); if (k) m.set(k, (m.get(k) || 0) + 1); });
   return [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'zh-Hant'));
 }
-const VERSION = '0.9.0';
+const VERSION = '0.10.0';
 const PRINT = /^#\/print/.test(location.hash);
 const fontKey = (L, st) => L.font || (DB && DB.prefs && DB.prefs.defaultFont) || st.font;
 const live = () => DB.poems.filter(p => !p.deleted);
@@ -583,7 +583,7 @@ async function importFiles(files, colId) {
 
 // ---------- routing ----------
 const go = h => { if (location.hash === h) render(); else location.hash = h; };
-window.addEventListener('hashchange', () => { RS = 0; SEL.on = false; SEL.ids.clear(); render(); if (route().view !== 'flow') window.scrollTo(0, 0); });
+window.addEventListener('hashchange', () => { if (route().view !== 'read') document.body.classList.remove('focus'); RS = 0; SEL.on = false; SEL.ids.clear(); render(); if (route().view !== 'flow') window.scrollTo(0, 0); });
 function route() {
   const h = location.hash.replace(/^#\/?/, '');
   const [path, qs] = h.split('?');
@@ -1105,6 +1105,7 @@ function readerView(p) {
       <span class="muted" id="stylename">· ${st.name}</span>
     </div>
     <div class="row d-only">
+      <button type="button" class="btn" data-act="focus-toggle" title="只留下詩（F 鍵）">專注閱讀</button>
       <button type="button" class="btn" data-act="tts-start">聽這首詩</button>
       <a class="btn" href="#/memo/${p.id}">背誦</a>
       <a class="btn" href="#/edit/${p.id}">編輯</a>
@@ -1126,7 +1127,10 @@ function readerView(p) {
   <div class="reader">
     <main class="stage" id="stage">${stageHTML(p, L)}</main>
     <aside class="controls" id="controls" aria-label="排版設定">${controlsHTML(p, L)}</aside>
-  </div>`;
+  </div>
+  <button type="button" class="ctltab d-only" data-act="ctl-toggle" aria-label="打開排版欄">排版 ‹</button>
+  <button type="button" class="focus-exit d-only" data-act="focus-toggle">離開專注　Esc</button>
+  <div class="focus-hint d-only">${L.dir === 'v' ? '滾輪或拖曳往左讀　·　' : ''}← → 換首　·　Esc 離開</div>`;
 }
 function illusHTML(p) { return p.illustration ? `<figure class="illus"><img data-img="${esc(p.illustration)}" alt="〈${esc(p.title)}〉的插圖"></figure>` : ''; }
 function afterHTML(p) {
@@ -1138,7 +1142,7 @@ function stageHTML(p, L) {
   return `<div class="stage-col">${navStripHTML(p)}${illusHTML(p)}${articleHTML(p, L)}${afterHTML(p)}${pagerHTML(p)}</div>`;
 }
 function controlsHTML(p, L) {
-  return `<div class="sheet-head m-only"><span class="grab" aria-hidden="true"></span><div class="row" style="justify-content:space-between"><h2 class="sec" style="font-size:18px">排版</h2><button type="button" class="btn ghost sq" data-act="sheet-toggle">完成</button></div></div>` + controlsInner(p, L);
+  return `<div class="ctl-head d-only"><span class="label" style="margin:0">排版</span><button type="button" class="btn ghost sq" data-act="ctl-toggle" title="收起排版欄">收起 ›</button></div><div class="sheet-head m-only"><span class="grab" aria-hidden="true"></span><div class="row" style="justify-content:space-between"><h2 class="sec" style="font-size:18px">排版</h2><button type="button" class="btn ghost sq" data-act="sheet-toggle">完成</button></div></div>` + controlsInner(p, L);
 }
 function controlsInner(p, L) {
   const st = STYLES[L.style];
@@ -2190,6 +2194,8 @@ document.addEventListener('click', e => {
     case 'app-update': flushSave(); setTimeout(() => location.reload(), 150); break;
     case 'app-later': { const u = $('#updbar'); if (u) u.remove(); toast('下次打開詩頁時會自動換成新版'); break; }
     case 'app-check': checkUpdate(); break;
+    case 'ctl-toggle': { const off = !document.body.classList.contains('ctl-off'); document.body.classList.toggle('ctl-off', off); try { localStorage.setItem('shiye-ctl-off', off ? '1' : ''); } catch (e) {} break; }
+    case 'focus-toggle': document.body.classList.toggle('focus'); if (document.body.classList.contains('focus')) toast('專注閱讀：按 Esc 或 F 離開', 2500); break;
     case 'sync-now': ShiSync.syncNow('button'); break;
     case 'sync-connect': {
       const o = $('#sy-owner').value, rp = $('#sy-repo').value, tk = $('#sy-token').value, m = $('#sy-msg');
@@ -2412,12 +2418,14 @@ window.addEventListener('drop', e => e.preventDefault());
 document.addEventListener('keydown', e => {
   const t = e.target;
   if (e.key === 'Escape' && $('#modal')) { closeModal(); return; }
+  if (e.key === 'Escape' && document.body.classList.contains('focus')) { document.body.classList.remove('focus'); return; }
   if ($('#modal')) return;
   if (t.id === 'ed-text' && e.key === 'Tab') { e.preventDefault(); if (e.shiftKey) shiftLines(-1); else insertAt('　'); return; }
   if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || e.altKey || e.ctrlKey || e.metaKey) return;
   const r = route();
   if (r.view !== 'read') return;
   const p = poemById(r.id); if (!p) return;
+  if ((e.key === 'f' || e.key === 'F') && !isMobile()) { e.preventDefault(); document.body.classList.toggle('focus'); return; }
   if ((e.key === 'v' || e.key === 'V') && p.type !== 'shape') { e.preventDefault(); const b0 = document.createElement('button'); b0.dataset.act = 'lay-dir'; document.body.appendChild(b0); b0.click(); b0.remove(); return; }
   const recite = layoutOf(p).style === 'recite';
   const fwd = e.key === 'ArrowRight' || (recite && (e.key === 'ArrowDown' || e.key === ' '));
@@ -2453,4 +2461,5 @@ function heartbeat() {
   window.addEventListener('pagehide', () => { flushSave(); try { navigator.sendBeacon('api/bye'); } catch (e) {} });
 }
 
+try { if (localStorage.getItem('shiye-ctl-off')) document.body.classList.add('ctl-off'); } catch (e) {}
 load().then(() => { render(); if (!PRINT) { heartbeat(); ShiSync.init(); registerSW(); } });

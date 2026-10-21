@@ -568,3 +568,30 @@ body.printmode #toast{display:none}
 .updbar{position:fixed;left:50%;transform:translateX(-50%);top:calc(12px + env(safe-area-inset-top));z-index:130;display:flex;align-items:center;gap:10px;padding:8px 8px 8px 18px;border-radius:24px;background:#1C1B19;color:#F6F1E6;box-shadow:0 8px 24px rgba(0,0,0,.25);font-size:14px;white-space:nowrap;max-width:calc(100vw - 24px)}
 .updbar .btn{height:34px;padding:0 14px}.updbar .btn.ghost{color:#F6F1E6;border-color:rgba(255,255,255,.3)}
 .linkbtn{border:none;background:none;padding:0;color:var(--accent);text-decoration:underline;font-size:inherit;cursor:pointer}
+
+/* ---------- v0.10：電腦版閱讀畫面放大、排版欄收起、專注閱讀、拖曳移動 ---------- */
+.ctltab,.focus-exit,.focus-hint{display:none}
+@media (min-width:761px){
+  .reader{flex-wrap:nowrap}
+  .stage{flex:1 1 0;min-width:0;padding:28px 32px}
+  .controls{flex:0 0 320px;width:320px}
+  .ctl-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:-10px}
+  .ctl-head .btn{height:32px;padding:0 12px}
+  .stage-col:has(.art.vdir){max-width:none}
+  .stage-col:has(.art.vdir) .art.vdir{max-width:none;height:max(520px,calc(100vh - 250px))}
+  body.ctl-off .controls{display:none}
+  body.ctl-off .stage-col:not(:has(.art.vdir)),body.ctl-off .stage-col .art:not(.vdir){max-width:900px}
+  body.ctl-off.m-read .ctltab{display:block;position:fixed;right:0;top:50%;transform:translateY(-50%);z-index:60;writing-mode:vertical-rl;border:none;background:var(--ink);color:#fff;padding:16px 9px;border-radius:10px 0 0 10px;font-size:14px;letter-spacing:.2em;box-shadow:0 4px 14px rgba(0,0,0,.18)}
+  body.focus .bar,body.focus .navstrip,body.focus .pager,body.focus .controls,body.focus .after,body.focus .ctltab{display:none!important}
+  body.focus .reader{min-height:100vh}
+  body.focus .stage{padding:24px 32px}
+  body.focus .stage-col{max-width:960px}
+  body.focus .stage-col:has(.art.vdir){max-width:none}
+  body.focus .stage-col:has(.art.vdir) .art.vdir{height:calc(100vh - 48px)}
+  body.focus.m-read .focus-exit{display:block;position:fixed;right:20px;top:16px;z-index:70;border:1px solid rgba(128,128,128,.35);background:rgba(28,27,25,.72);color:#F6F1E6;border-radius:18px;padding:7px 14px;font-size:13px;opacity:.55;transition:opacity .2s}
+  body.focus .focus-exit:hover{opacity:1}
+  body.focus.m-read .focus-hint{display:block;position:fixed;left:50%;bottom:10px;transform:translateX(-50%);z-index:70;color:#9A968C;font-size:12px;pointer-events:none;animation:fadehint 4s forwards}
+  @keyframes fadehint{0%,70%{opacity:1}100%{opacity:0}}
+  .art.vdir.pannable{cursor:grab}
+  .art.vdir.panning{cursor:grabbing;user-select:none;-webkit-user-select:none}
+}

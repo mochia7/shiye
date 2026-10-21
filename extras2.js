@@ -267,5 +267,36 @@
     else if (e.key === 'h' || e.key === 'H') { e.preventDefault(); const h = $('[data-act=mm-hint]'); if (h) h.click(); }
   });
 
+  // ---------- 電腦版：用滑鼠拖曳移動直排的詩 ----------
+  // 按住滑鼠左右拖：移動畫面；想選取文字（劃線、查萌典）：按住不動半秒再拖，或連點兩下選詞
+  let PAN = null;
+  const markPannable = () => document.querySelectorAll('#stage .art.vdir').forEach(a => a.classList.toggle('pannable', a.scrollWidth > a.clientWidth + 4));
+  new MutationObserver(() => markPannable()).observe(document.documentElement, { childList: true, subtree: true });
+  window.addEventListener('resize', markPannable);
+  document.addEventListener('mousedown', e => {
+    if (e.button !== 0) return;
+    const a = e.target.closest && e.target.closest('#stage .art.vdir');
+    if (!a || e.target.closest('button, a, mark, input, select, textarea')) return;
+    PAN = { a, x: e.clientX, y: e.clientY, sl: a.scrollLeft, sy: scrollY, t: Date.now(), on: false };
+  });
+  document.addEventListener('mousemove', e => {
+    if (!PAN) return;
+    const dx = e.clientX - PAN.x, dy = e.clientY - PAN.y;
+    if (!PAN.on) {
+      if (Date.now() - PAN.t > 450) { PAN = null; return; }        // 按住不動：讓瀏覽器選取文字
+      if (Math.abs(dx) < 5 && Math.abs(dy) < 5) return;
+      PAN.on = true; PAN.a.classList.add('panning');
+    }
+    try { window.getSelection().removeAllRanges(); } catch (er) {}
+    PAN.a.scrollLeft = PAN.sl - dx;
+    if (Math.abs(dy) > 8) window.scrollTo(0, PAN.sy - dy);
+    e.preventDefault();
+  });
+  const endPan = () => { if (PAN && PAN.on) { PAN.a.classList.remove('panning'); const a = PAN.a; setTimeout(() => a.dataset.panned = '', 0); a.dataset.panned = '1'; } PAN = null; };
+  document.addEventListener('mouseup', endPan);
+  window.addEventListener('blur', endPan);
+  // 拖曳結束時不要觸發點擊（例如點到劃線）
+  document.addEventListener('click', e => { const a = e.target.closest && e.target.closest('.art.vdir'); if (a && a.dataset.panned === '1') { e.stopPropagation(); e.preventDefault(); } }, true);
+
   window.ShiR = { speakPoem, stopTTS: stop, todayPoem, maybeAutoToday, todayAuto, memoView, libView, hideSelbar };
 })();
